@@ -1,16 +1,10 @@
 diff -Nur linux-2.6.39/drivers/md/Kconfig linux-2.6.39-dmhybrid/drivers/md/Kconfig
 --- linux-2.6.39/drivers/md/Kconfig	2011-05-19 00:06:34.000000000 -0400
-+++ linux-2.6.39-dmhybrid/drivers/md/Kconfig	2011-12-02 20:08:33.000000000 -0500
-@@ -333,4 +333,16 @@
++++ linux-2.6.39-dmhybrid/drivers/md/Kconfig	2011-12-03 09:03:50.000000000 -0500
+@@ -333,4 +333,10 @@
         ---help---
           A target that intermittently fails I/O for debugging purposes.
  
-+config DM_CACHE
-+	tristate "Cache target support (EXPERIMENTAL)"
-+	depends on BLK_DEV_DM && EXPERIMENTAL
-+	---help---
-+	  Support for generic cache target for device-mapper.
-+
 +config DM_HYBRID
 +	tristate "Hybrid target support (EXPERIMENTAL)"
 +	depends on BLK_DEV_DM && EXPERIMENTAL
@@ -20,12 +14,11 @@ diff -Nur linux-2.6.39/drivers/md/Kconfig linux-2.6.39-dmhybrid/drivers/md/Kconf
  endif # MD
 diff -Nur linux-2.6.39/drivers/md/Makefile linux-2.6.39-dmhybrid/drivers/md/Makefile
 --- linux-2.6.39/drivers/md/Makefile	2011-05-19 00:06:34.000000000 -0400
-+++ linux-2.6.39-dmhybrid/drivers/md/Makefile	2011-12-02 20:08:28.000000000 -0500
-@@ -37,6 +37,8 @@
++++ linux-2.6.39-dmhybrid/drivers/md/Makefile	2011-12-03 09:03:55.000000000 -0500
+@@ -37,6 +37,7 @@
  obj-$(CONFIG_DM_MIRROR)		+= dm-mirror.o dm-log.o dm-region-hash.o
  obj-$(CONFIG_DM_LOG_USERSPACE)	+= dm-log-userspace.o
  obj-$(CONFIG_DM_ZERO)		+= dm-zero.o
-+obj-$(CONFIG_DM_CACHE)		+= dm-cache.o
 +obj-$(CONFIG_DM_HYBRID)		+= dm-hybrid.o
  obj-$(CONFIG_DM_RAID)	+= dm-raid.o
  
