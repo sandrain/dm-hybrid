@@ -48,6 +48,7 @@
 #endif
 
 #define	get_hybrid(ti)		((struct hybrid_c *) (ti)->private)
+#define DMH_COPY_PAGES 1024
 
 /* Default params */
 #define	DMH_DEFAULT_BLOCK_SHIFT		2
@@ -55,6 +56,7 @@
 struct hybrid_c {
 	struct dm_dev	*src;
 	struct dm_dev	*cache;
+	struct dm_io_client *io_client;
 
 	sector_t	src_dev_size;		/* Device size in sectors */
 	sector_t	cache_dev_size;
@@ -66,6 +68,23 @@ struct hybrid_c {
 	__u32		cache_blocks;		/* Units are in blocks */
 	__u32		writeback_offset;
 	__u32		trigger_blocks;
+};
+
+struct hybrid_meta_block {
+	__le32		magic1;
+
+	__le32		src_major;
+	__le32		src_minor;
+
+	__le64		src_dev_size;		/* number of sectors */
+	__le64		cache_dev_size;
+
+	__le16		block_size;
+	__le16		block_shift;
+
+	__le32		cache_blocks;
+	__le32		writeback_offset;
+	__le32		trigger_blocks;
 };
 
 /*
@@ -182,6 +201,13 @@ arg_invalid:
 	dmh->trigger_blocks = trigger_blocks;
 	dmh->src_dev_size = src_dev_size >> 9;
 	dmh->cache_dev_size = cache_dev_size >> 9;
+	dmh->io_client = dm_io_client_create(DMH_COPY_PAGES);
+
+	if (IS_ERR(dmh->io_client)) {
+		kfree(dmh);
+		ti->error = "Failed to create io client";
+		return PTR_ERR(dmh->io_client);
+	}
 
 	//ti->split_io = dmh->block_size << 1;
 	ti->private = dmh;
@@ -194,10 +220,38 @@ arg_invalid:
 static void hybrid_dtr(struct dm_target *ti)
 {
 	struct hybrid_c *dmh = get_hybrid(ti);
+	struct dm_io_region region;
+	struct dm_io_request req;
+	struct hybrid_meta_block *meta;
+
+	meta = (struct hybrid_meta_block *) vmalloc(1024);
+	if (!meta) {
+		DMERR("Unable to allocate memory for metablock");
+	}
+	else {
+		unsigned long errbits;
+		/* Sync metadata */
+		memset((void *) meta, 0, 1024);
+
+		region.bdev = dmh->cache->bdev;
+		region.sector = 0;
+		region.count = 2;	/* 1KB */
+
+		req.bi_rw = WRITE;
+		req.mem.type = DM_IO_VMA;
+		req.mem.ptr.vma = meta;
+		req.notify.fn = NULL;
+		req.client = dmh->io_client;
+
+		dm_io(&req, 1, &region, &errbits);
+	}
+
+	dm_io_client_destroy(dmh->io_client);
 
 	dm_put_device(ti, dmh->src);
 	dm_put_device(ti, dmh->cache);
 
+	kfree(meta);
 	kfree(dmh);
 
 	DPRINTK("hybrid_dtr");
