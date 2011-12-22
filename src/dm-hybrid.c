@@ -59,6 +59,7 @@ struct hybrid_c {
 	sector_t	src_dev_size;		/* Device size in sectors */
 	sector_t	cache_dev_size;
 
+	/* TODO: change the unit of block_size to number of sectors */
 	__u16		block_size;		/* in KB */
 	__u16		block_shift;
 
@@ -101,14 +102,13 @@ static int hybrid_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	sector_t src_dev_size;
 	sector_t cache_dev_size;
 
-	ret = dm_get_device(ti, argv[0],
-			  dm_table_get_mode(ti->table), &ssd);
+	ret = dm_get_device(ti, argv[0], dm_table_get_mode(ti->table), &hdd);
 	if (ret < 0) {
 		ti->error = DMH_PREFIX "SSD device lookup failed";
 		return ret;
 	}
 
-	ret = dm_get_device(ti, argv[1], dm_table_get_mode(ti->table), &hdd);
+	ret = dm_get_device(ti, argv[1], dm_table_get_mode(ti->table), &ssd);
 	if (ret < 0) {
 		ti->error = DMH_PREFIX "HDD device lookup failed";
 		return ret;
@@ -183,7 +183,7 @@ arg_invalid:
 	dmh->src_dev_size = src_dev_size >> 9;
 	dmh->cache_dev_size = cache_dev_size >> 9;
 
-	ti->split_io = dmh->block_size << 1;
+	//ti->split_io = dmh->block_size << 1;
 	ti->private = dmh;
 
 	DPRINTK("hybrid_ctr");
