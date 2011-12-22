@@ -48,7 +48,8 @@
 #endif
 
 #define	get_hybrid(ti)		((struct hybrid_c *) (ti)->private)
-#define DMH_COPY_PAGES 1024
+#define	DMH_META_BLOCK_SIZE		1024
+#define DMH_COPY_PAGES			1024
 
 /* Default params */
 #define	DMH_DEFAULT_BLOCK_SHIFT		2
@@ -68,6 +69,10 @@ struct hybrid_c {
 	__u32		cache_blocks;		/* Units are in blocks */
 	__u32		writeback_offset;
 	__u32		trigger_blocks;
+
+	atomic_t	meta_block_dirty;
+	spinlock_t	meta_block_lock;
+	struct hybrid_meta_block *meta_block;
 };
 
 #define	DMH_MAGIC_1	0x20090927U
@@ -117,6 +122,7 @@ static int hybrid_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	struct hybrid_c *dmh;
 	struct dm_dev *hdd;
 	struct dm_dev *ssd;
+	struct hybrid_meta_block *meta_block = NULL;
 	__u16 block_shift = 0;
 	__u32 cache_blocks = 0;
 	__u32 writeback_offset = 0;
@@ -133,11 +139,18 @@ static int hybrid_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ret = dm_get_device(ti, argv[1], dm_table_get_mode(ti->table), &ssd);
 	if (ret < 0) {
 		ti->error = DMH_PREFIX "HDD device lookup failed";
-		return ret;
+		goto put_hdd;
+	}
+
+	meta_block = (struct hybrid_meta_block *) vmalloc(DMH_META_BLOCK_SIZE);
+	if (!meta_block) {
+		ret = -ENOMEM;
+		goto put_ssd;
 	}
 
 	if (argc == 2) {
 		/* In this case, we check whether old session should continue. */
+
 		block_shift = DMH_DEFAULT_BLOCK_SHIFT;
 	}
 	else {
@@ -153,14 +166,16 @@ static int hybrid_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 				goto arg_invalid;
 			if (unlikely(block_shift == 0)) {
 				ti->error = DMH_PREFIX "Block size cannot be 0";
-				return -EINVAL;
+				ret = -EINVAL;
+				goto put_ssd;
 			}
 			break;
 
 		default:
 arg_invalid:
 			ti->error = DMH_PREFIX "Cannot parse the arguments";
-			return -EINVAL;
+			ret = -EINVAL;
+			goto put_ssd;
 		}
 	}
 
@@ -178,21 +193,25 @@ arg_invalid:
 
 	if (cache_blocks << block_shift > cache_dev_size) {
 		ti->error = DMH_PREFIX "Cache size exceeds the device size";
-		return -EINVAL;
+		ret = -EINVAL;
+		goto free_meta_block;
 	}
 	if (writeback_offset << block_shift > cache_dev_size) {
 		ti->error = DMH_PREFIX "Writeback blocks exceeds the device size";
-		return -EINVAL;
+		ret = -EINVAL;
+		goto free_meta_block;
 	}
 	if (unlikely(trigger_blocks << block_shift > cache_dev_size)) {
 		ti->error = DMH_PREFIX "Trigger blocks exceeds the device size";
-		return -EINVAL;
+		ret = -EINVAL;
+		goto free_meta_block;
 	}
 
 	/* Prepare our context. */
 	if (unlikely((dmh = kmalloc(sizeof(*dmh), GFP_KERNEL)) == NULL)) {
 		ti->error = DMH_PREFIX "kamlloc failed";
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto free_meta_block;
 	}
 
 	dmh->src = hdd;
@@ -204,12 +223,14 @@ arg_invalid:
 	dmh->trigger_blocks = trigger_blocks;
 	dmh->src_dev_size = src_dev_size >> 9;
 	dmh->cache_dev_size = cache_dev_size >> 9;
+	dmh->meta_block = meta_block;
+
 	dmh->io_client = dm_io_client_create(DMH_COPY_PAGES);
 
 	if (IS_ERR(dmh->io_client)) {
-		kfree(dmh);
 		ti->error = "Failed to create io client";
-		return PTR_ERR(dmh->io_client);
+		ret = PTR_ERR(dmh->io_client);
+		goto free_dmh;
 	}
 
 	/*ti->split_io = dmh->block_size << 1;*/
@@ -217,6 +238,17 @@ arg_invalid:
 
 	DPRINTK("hybrid_ctr");
 
+	return ret;
+
+free_dmh:
+	kfree(dmh);
+free_meta_block:
+	if (meta_block)
+		vfree(meta_block);
+put_ssd:
+	dm_put_device(ssd);
+put_hdd:
+	dm_put_device(hdd);
 	return ret;
 }
 
