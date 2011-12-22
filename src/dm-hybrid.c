@@ -175,6 +175,7 @@ arg_invalid:
 
 	dmh->src = hdd;
 	dmh->cache = ssd;
+	dmh->cache_blocks = cache_blocks;
 	dmh->block_shift = block_shift;
 	dmh->block_size = 1 << block_shift;
 	dmh->writeback_offset = writeback_offset;
@@ -182,6 +183,7 @@ arg_invalid:
 	dmh->src_dev_size = src_dev_size >> 9;
 	dmh->cache_dev_size = cache_dev_size >> 9;
 
+	ti->split_io = dmh->block_size << 1;
 	ti->private = dmh;
 
 	DPRINTK("hybrid_ctr");
@@ -203,8 +205,7 @@ static void hybrid_dtr(struct dm_target *ti)
 
 static inline void dump_bio(struct bio *bio)
 {
-	DPRINTK("%s %llu %u",
-		bio_rw(bio) == READ ? "READ" :
+	DPRINTK("%s %llu %u", bio_rw(bio) == READ ? "READ" :
 			(bio_rw(bio) == READA ? "READA" : "WRITE"),
 			(u64) bio->bi_sector, bio_sectors(bio));
 }
