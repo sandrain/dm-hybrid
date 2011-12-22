@@ -70,22 +70,25 @@ struct hybrid_c {
 	__u32		trigger_blocks;
 };
 
+#define	DMH_MAGIC_1	0x20090927U
+#define	DMH_MAGIC_2	0x20110117U
+
 struct hybrid_meta_block {
 	__le32		magic1;
 
 	__le32		src_major;
 	__le32		src_minor;
-
 	__le64		src_dev_size;		/* number of sectors */
-	__le64		cache_dev_size;
 
 	__le16		block_size;
 	__le16		block_shift;
 
+	__le32		magic2;
+
 	__le32		cache_blocks;
 	__le32		writeback_offset;
 	__le32		trigger_blocks;
-};
+} __attribute__((packed));
 
 /*
  * Target constructor.
@@ -209,12 +212,28 @@ arg_invalid:
 		return PTR_ERR(dmh->io_client);
 	}
 
-	//ti->split_io = dmh->block_size << 1;
+	/*ti->split_io = dmh->block_size << 1;*/
 	ti->private = dmh;
 
 	DPRINTK("hybrid_ctr");
 
 	return ret;
+}
+
+static inline void __fill_meta_block(struct hybrid_c *dmh,
+				struct hybrid_meta_block *meta)
+{
+	meta->magic1 = cpu_to_le32(DMH_MAGIC_1);
+	meta->magic2 = cpu_to_le32(DMH_MAGIC_2);
+
+	meta->src_major = cpu_to_le32(MAJOR(dmh->src->bdev->bd_dev));
+	meta->src_minor = cpu_to_le32(MINOR(dmh->src->bdev->bd_dev));
+	meta->src_dev_size = cpu_to_le64(dmh->src_dev_size);
+	meta->block_size = cpu_to_le16(dmh->block_size);
+	meta->block_shift = cpu_to_le16(dmh->block_shift);
+	meta->cache_blocks = cpu_to_le32(dmh->cache_blocks);
+	meta->writeback_offset = cpu_to_le32(dmh->writeback_offset);
+	meta->trigger_blocks = cpu_to_le32(dmh->trigger_blocks);
 }
 
 static void hybrid_dtr(struct dm_target *ti)
@@ -232,6 +251,7 @@ static void hybrid_dtr(struct dm_target *ti)
 		unsigned long errbits;
 		/* Sync metadata */
 		memset((void *) meta, 0, 1024);
+		__fill_meta_block(dmh, meta);
 
 		region.bdev = dmh->cache->bdev;
 		region.sector = 0;
@@ -243,6 +263,7 @@ static void hybrid_dtr(struct dm_target *ti)
 		req.notify.fn = NULL;
 		req.client = dmh->io_client;
 
+		/* TODO: check the return value! */
 		dm_io(&req, 1, &region, &errbits);
 	}
 
@@ -251,7 +272,7 @@ static void hybrid_dtr(struct dm_target *ti)
 	dm_put_device(ti, dmh->src);
 	dm_put_device(ti, dmh->cache);
 
-	kfree(meta);
+	vfree(meta);
 	kfree(dmh);
 
 	DPRINTK("hybrid_dtr");
