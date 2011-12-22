@@ -80,7 +80,7 @@ struct hybrid_c {
  *
  * argv[0]: path to hdd, the source device
  * argv[1]: path to ssd, the cache device
- * argv[2]: (o) block shift, e.g. 2=4KB block, 3=8KB, 4=16KB, ...
+ * argv[2]: (o) block shift (>=2), e.g. 2=4KB block, 3=8KB, 4=16KB, ...
  * argv[3]: (o) ssd space to be used in number of blocks
  * argv[4]: (o) writeback cache size in number of blocks
  * argv[5]: (o) re-organization threshold in number of blocks
@@ -204,8 +204,9 @@ static void hybrid_dtr(struct dm_target *ti)
 static inline void dump_bio(struct bio *bio)
 {
 	DPRINTK("%s %llu %u",
-		bio_rw(bio) == READ ? "READ" : (bio_rw(bio) == READA ? "READA" : "WRITE"),
-		(u64) bio->bi_sector, bio_sectors(bio));
+		bio_rw(bio) == READ ? "READ" :
+			(bio_rw(bio) == READA ? "READA" : "WRITE"),
+			(u64) bio->bi_sector, bio_sectors(bio));
 }
 
 static int hybrid_map(struct dm_target *ti, struct bio *bio,
@@ -234,7 +235,7 @@ static int hybrid_status(struct dm_target *ti, status_type_t type,
 			"block size = %d KB, cache blocks = %u, "
 			"writeback offset = %u, Trigger blocks = %u",
 			dmh->src->name, dmh->cache->name,
-			dmh->block_size, dmh->cache_blocks,
+			dmh->block_size >> 10, dmh->cache_blocks,
 			dmh->writeback_offset, dmh->trigger_blocks);
 		break;
 
