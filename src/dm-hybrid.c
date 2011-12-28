@@ -51,6 +51,13 @@
 #define	DMH_META_BLOCK_SIZE		1024
 #define DMH_COPY_PAGES			1024
 
+#ifndef	TRUE
+#  define	TURE		1
+#endif
+#ifndef	FALSE
+#  define	FALSE		0
+#endif
+
 /* Default params */
 #define	DMH_DEFAULT_BLOCK_SHIFT		2
 
@@ -94,6 +101,98 @@ struct hybrid_meta_block {
 	__le32		writeback_offset;
 	__le32		trigger_blocks;
 } __attribute__((packed));
+
+/****************************************************************************
+ *  Wrapper functions for using the new dm_io API
+ ****************************************************************************/
+static int dm_io_sync_vm(unsigned int num_regions,struct dm_io_region *where,
+		int rw, void *data, unsigned long *error_bits, struct hybrid_c *dmh)
+{
+	struct dm_io_request iorq;
+
+	iorq.bi_rw= rw;
+	iorq.mem.type = DM_IO_VMA;
+	iorq.mem.ptr.vma = data;
+	iorq.notify.fn = NULL;
+	iorq.client = dmh->io_client;
+
+	return dm_io(&iorq, num_regions, where, error_bits);
+}
+
+#if 0
+static int dm_io_async_bvec(unsigned int num_regions, struct dm_io_region *where,
+		int rw, struct bio_vec *bvec, io_notify_fn fn, void *context)
+{
+	struct kcached_job *job = (struct kcached_job *)context;
+	struct cache_c *dmc = job->dmc;
+	struct dm_io_request iorq;
+
+	iorq.bi_rw = (rw | (1 << REQ_SYNC));
+	iorq.mem.type = DM_IO_BVEC;
+	iorq.mem.ptr.bvec = bvec;
+	iorq.notify.fn = fn;
+	iorq.notify.context = context;
+	iorq.client = dmc->io_client;
+
+	return dm_io(&iorq, num_regions, where, NULL);
+}
+#endif
+
+static inline int __is_valid_meta_block(struct hybrid_c *dmh,
+					struct hybrid_meta_block *meta)
+{
+	if (!(le32_to_cpu(meta->magic1) == DMH_MAGIC_1
+		&& le32_to_cpu(meta->magic2) == DMH_MAGIC_2))
+		return FALSE;
+
+	if (!(le32_to_cpu(meta->src_major) == MAJOR(dmh->src->bdev->bd_dev)
+		&& le32_to_cpu(meta->src_minor) == MINOR(dmh->src->bdev->bd_dev)))
+		return FALSE;
+
+	return le32_to_cpu(meta->src_dev_size) == dmh->src_dev_size;
+}
+
+static inline void __extract_meta_block(struct hybrid_c *dmh,
+				struct hybrid_meta_block *meta)
+{
+	dmh->block_size = le32_to_cpu(meta->block_size);
+	dmh->block_shift = le32_to_cpu(meta->block_shift);
+	dmh->cache_blocks = le32_to_cpu(meta->cache_blocks);
+	dmh->writeback_offset = le32_to_cpu(meta->writeback_offset);
+	dmh->trigger_blocks = le32_to_cpu(meta->trigger_blocks);
+}
+
+static inline void __fill_meta_block(struct hybrid_c *dmh,
+				struct hybrid_meta_block *meta)
+{
+	meta->magic1 = cpu_to_le32(DMH_MAGIC_1);
+	meta->magic2 = cpu_to_le32(DMH_MAGIC_2);
+
+	meta->src_major = cpu_to_le32(MAJOR(dmh->src->bdev->bd_dev));
+	meta->src_minor = cpu_to_le32(MINOR(dmh->src->bdev->bd_dev));
+	meta->src_dev_size = cpu_to_le64(dmh->src_dev_size);
+	meta->block_size = cpu_to_le16(dmh->block_size);
+	meta->block_shift = cpu_to_le16(dmh->block_shift);
+	meta->cache_blocks = cpu_to_le32(dmh->cache_blocks);
+	meta->writeback_offset = cpu_to_le32(dmh->writeback_offset);
+	meta->trigger_blocks = cpu_to_le32(dmh->trigger_blocks);
+}
+
+static void extract_meta_block(struct hybrid_c *dmh,
+				struct hybrid_meta_block *meta)
+{
+	spin_lock(&dmh->meta_block_lock);
+	__extract_meta_block(dmh, meta);
+	spin_unlock(&dmh->meta_block_lock);
+}
+
+static void fill_meta_block(struct hybrid_c *dmh,
+				struct hybrid_meta_block *meta)
+{
+	spin_lock(&dmh->meta_block_lock);
+	__fill_meta_block(dmh, meta);
+	spin_unlock(&dmh->meta_block_lock);
+}
 
 /*
  * Target constructor.
@@ -149,7 +248,8 @@ static int hybrid_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	if (argc == 2) {
-		/* In this case, we check whether old session should continue. */
+		/* TODO:
+		 * In this case, we must check whether old session should continue. */
 
 		block_shift = DMH_DEFAULT_BLOCK_SHIFT;
 	}
@@ -233,6 +333,33 @@ arg_invalid:
 		goto free_dmh;
 	}
 
+	/* TODO:
+	 * Here we read the superblock to check whether old session is
+	 * still available.
+	 * Move this part somewhere above!
+	 */
+	if (argc == 2) {
+		struct dm_io_region where;
+		unsigned long bits;
+
+		where.bdev = ssd->bdev;
+		where.sector = 0;
+		where.count = 2;
+
+		DPRINTK("Try to read the old meta-block");
+
+		/* TODO: check the return value! */
+		dm_io_sync_vm(1, &where, READ, meta_block, &bits, dmh);
+
+		if (__is_valid_meta_block(dmh, meta_block)) {
+			DPRINTK("Valid meta-block found, continue the old session");
+			extract_meta_block(dmh, meta_block);
+		}
+		else {
+			DPRINTK("No meta-block found, start a new session");
+		}
+	}
+
 	/*ti->split_io = dmh->block_size << 1;*/
 	ti->private = dmh;
 
@@ -246,35 +373,27 @@ free_meta_block:
 	if (meta_block)
 		vfree(meta_block);
 put_ssd:
-	dm_put_device(ssd);
+	dm_put_device(ti, ssd);
 put_hdd:
-	dm_put_device(hdd);
+	dm_put_device(ti, hdd);
 	return ret;
-}
-
-static inline void __fill_meta_block(struct hybrid_c *dmh,
-				struct hybrid_meta_block *meta)
-{
-	meta->magic1 = cpu_to_le32(DMH_MAGIC_1);
-	meta->magic2 = cpu_to_le32(DMH_MAGIC_2);
-
-	meta->src_major = cpu_to_le32(MAJOR(dmh->src->bdev->bd_dev));
-	meta->src_minor = cpu_to_le32(MINOR(dmh->src->bdev->bd_dev));
-	meta->src_dev_size = cpu_to_le64(dmh->src_dev_size);
-	meta->block_size = cpu_to_le16(dmh->block_size);
-	meta->block_shift = cpu_to_le16(dmh->block_shift);
-	meta->cache_blocks = cpu_to_le32(dmh->cache_blocks);
-	meta->writeback_offset = cpu_to_le32(dmh->writeback_offset);
-	meta->trigger_blocks = cpu_to_le32(dmh->trigger_blocks);
 }
 
 static void hybrid_dtr(struct dm_target *ti)
 {
 	struct hybrid_c *dmh = get_hybrid(ti);
 	struct dm_io_region region;
+#if 0
 	struct dm_io_request req;
 	struct hybrid_meta_block *meta;
+#endif
+	unsigned long bits;
 
+	fill_meta_block(dmh, dmh->meta_block);
+	/* TODO: check the return value! */
+	dm_io_sync_vm(1, &region, WRITE, dmh->meta_block, &bits, dmh);
+
+#if 0
 	meta = (struct hybrid_meta_block *) vmalloc(1024);
 	if (!meta) {
 		DMERR("Unable to allocate memory for metablock");
@@ -298,13 +417,15 @@ static void hybrid_dtr(struct dm_target *ti)
 		/* TODO: check the return value! */
 		dm_io(&req, 1, &region, &errbits);
 	}
+#endif
 
 	dm_io_client_destroy(dmh->io_client);
 
 	dm_put_device(ti, dmh->src);
 	dm_put_device(ti, dmh->cache);
 
-	vfree(meta);
+	/* vfree(meta); */
+	vfree(dmh->meta_block);
 	kfree(dmh);
 
 	DPRINTK("hybrid_dtr");
