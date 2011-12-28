@@ -390,6 +390,11 @@ static void hybrid_dtr(struct dm_target *ti)
 	unsigned long bits;
 
 	fill_meta_block(dmh, dmh->meta_block);
+
+	region.bdev = dmh->cache->bdev;
+	region.sector = 0;
+	region.count = 2;	/* 1KB */
+
 	/* TODO: check the return value! */
 	dm_io_sync_vm(1, &region, WRITE, dmh->meta_block, &bits, dmh);
 
