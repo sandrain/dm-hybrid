@@ -52,10 +52,10 @@
 #define DMH_COPY_PAGES			1024
 
 #ifndef	TRUE
-#  define	TURE		1
+#  define	TRUE			1
 #endif
 #ifndef	FALSE
-#  define	FALSE		0
+#  define	FALSE			0
 #endif
 
 /* Default params */
@@ -287,7 +287,7 @@ arg_invalid:
 	if (cache_blocks == 0)
 		cache_blocks = src_dev_size >> block_shift;
 	if (writeback_offset == 0)
-		writeback_offset = cache_blocks >> 3;
+		writeback_offset = cache_blocks - (cache_blocks >> 3);
 	if (trigger_blocks == 0)
 		trigger_blocks = cache_blocks >> 4;
 
@@ -383,10 +383,6 @@ static void hybrid_dtr(struct dm_target *ti)
 {
 	struct hybrid_c *dmh = get_hybrid(ti);
 	struct dm_io_region region;
-#if 0
-	struct dm_io_request req;
-	struct hybrid_meta_block *meta;
-#endif
 	unsigned long bits;
 
 	fill_meta_block(dmh, dmh->meta_block);
@@ -398,38 +394,11 @@ static void hybrid_dtr(struct dm_target *ti)
 	/* TODO: check the return value! */
 	dm_io_sync_vm(1, &region, WRITE, dmh->meta_block, &bits, dmh);
 
-#if 0
-	meta = (struct hybrid_meta_block *) vmalloc(1024);
-	if (!meta) {
-		DMERR("Unable to allocate memory for metablock");
-	}
-	else {
-		unsigned long errbits;
-		/* Sync metadata */
-		memset((void *) meta, 0, 1024);
-		__fill_meta_block(dmh, meta);
-
-		region.bdev = dmh->cache->bdev;
-		region.sector = 0;
-		region.count = 2;	/* 1KB */
-
-		req.bi_rw = WRITE;
-		req.mem.type = DM_IO_VMA;
-		req.mem.ptr.vma = meta;
-		req.notify.fn = NULL;
-		req.client = dmh->io_client;
-
-		/* TODO: check the return value! */
-		dm_io(&req, 1, &region, &errbits);
-	}
-#endif
-
 	dm_io_client_destroy(dmh->io_client);
 
 	dm_put_device(ti, dmh->src);
 	dm_put_device(ti, dmh->cache);
 
-	/* vfree(meta); */
 	vfree(dmh->meta_block);
 	kfree(dmh);
 
