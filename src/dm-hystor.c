@@ -41,13 +41,13 @@
 #include <linux/dm-io.h>
 #include <linux/dm-kcopyd.h>
 
-#define DMC_DEBUG 0
+#define DMG_DEBUG 0
 
-#define DM_MSG_PREFIX "cache"
-#define DMC_PREFIX "dm-cache: "
+#define DM_MSG_PREFIX "hystor"
+#define DMG_PREFIX "dm-hystor: "
 
-#if DMC_DEBUG
-#define DPRINTK( s, arg... ) printk(DMC_PREFIX s "\n", ##arg)
+#if DMG_DEBUG
+#define DPRINTK( s, arg... ) printk(DMG_PREFIX s "\n", ##arg)
 #else
 #define DPRINTK( s, arg... )
 #endif
@@ -80,7 +80,7 @@
 /*
  * Cache context
  */
-struct cache_c {
+struct hystor_c {
 	struct dm_dev *src_dev;		/* Source device */
 	struct dm_dev *cache_dev;	/* Cache device */
 	struct dm_kcopyd_client *kcp_client; /* Kcopyd client for writing back data */
@@ -126,7 +126,7 @@ struct cacheblock {
 /* Structure for a kcached job */
 struct kcached_job {
 	struct list_head list;
-	struct cache_c *dmc;
+	struct hystor_c *dmc;
 	struct bio *bio;	/* Original bio */
 	struct dm_io_region src;
 	struct dm_io_region dest;
@@ -146,7 +146,7 @@ struct kcached_job {
  *  Wrapper functions for using the new dm_io API
  ****************************************************************************/
 static int dm_io_sync_vm(unsigned int num_regions, struct dm_io_region
-	*where, int rw, void *data, unsigned long *error_bits, struct cache_c *dmc)
+	*where, int rw, void *data, unsigned long *error_bits, struct hystor_c *dmc)
 {
 	struct dm_io_request iorq;
 
@@ -163,7 +163,7 @@ static int dm_io_async_bvec(unsigned int num_regions, struct dm_io_region
 	*where, int rw, struct bio_vec *bvec, io_notify_fn fn, void *context)
 {
 	struct kcached_job *job = (struct kcached_job *)context;
-	struct cache_c *dmc = job->dmc;
+	struct hystor_c *dmc = job->dmc;
 	struct dm_io_request iorq;
 
 	iorq.bi_rw = (rw | (1 << REQ_SYNC));
@@ -223,7 +223,7 @@ static void drop_pages(struct page_list *pl)
 	}
 }
 
-static int kcached_get_pages(struct cache_c *dmc, unsigned int nr,
+static int kcached_get_pages(struct hystor_c *dmc, unsigned int nr,
 	                         struct page_list **pages)
 {
 	struct page_list *pl;
@@ -248,7 +248,7 @@ static int kcached_get_pages(struct cache_c *dmc, unsigned int nr,
 	return 0;
 }
 
-static void kcached_put_pages(struct cache_c *dmc, struct page_list *pl)
+static void kcached_put_pages(struct hystor_c *dmc, struct page_list *pl)
 {
 	struct page_list *cursor;
 
@@ -263,7 +263,7 @@ static void kcached_put_pages(struct cache_c *dmc, struct page_list *pl)
 	spin_unlock(&dmc->lock);
 }
 
-static int alloc_bio_pages(struct cache_c *dmc, unsigned int nr)
+static int alloc_bio_pages(struct hystor_c *dmc, unsigned int nr)
 {
 	unsigned int i;
 	struct page_list *pl = NULL, *next;
@@ -285,7 +285,7 @@ static int alloc_bio_pages(struct cache_c *dmc, unsigned int nr)
 	return 0;
 }
 
-static void free_bio_pages(struct cache_c *dmc)
+static void free_bio_pages(struct hystor_c *dmc)
 {
 	BUG_ON(dmc->nr_free_pages != dmc->nr_pages);
 	drop_pages(dmc->pages);
@@ -410,7 +410,7 @@ static int do_fetch(struct kcached_job *job)
 {
 	int r = 0, i, j;
 	struct bio *bio = job->bio;
-	struct cache_c *dmc = job->dmc;
+	struct hystor_c *dmc = job->dmc;
 	unsigned int offset, head, tail, remaining, nr_vecs, idx = 0;
 	struct bio_vec *bvec;
 	struct page_list *pl;
@@ -551,7 +551,7 @@ static int do_store(struct kcached_job *job)
 {
 	int i, j, r = 0;
 	struct bio *bio = job->bio, *clone;
-	struct cache_c *dmc = job->dmc;
+	struct hystor_c *dmc = job->dmc;
 	unsigned int offset, head, tail, remaining, nr_vecs;
 	struct bio_vec *bvec;
 
@@ -767,7 +767,7 @@ static void queue_job(struct kcached_job *job)
 	wake();
 }
 
-static int kcached_init(struct cache_c *dmc)
+static int kcached_init(struct hystor_c *dmc)
 {
 	int r;
 
@@ -786,7 +786,7 @@ static int kcached_init(struct cache_c *dmc)
 	return 0;
 }
 
-void kcached_client_destroy(struct cache_c *dmc)
+void kcached_client_destroy(struct hystor_c *dmc)
 {
 	/* Wait for completion of all jobs submitted by this client. */
 	wait_event(dmc->destroyq, !atomic_read(&dmc->nr_jobs));
@@ -810,7 +810,7 @@ static void copy_callback(int read_err, unsigned int write_err, void *context)
 	flush_bios(cacheblock);
 }
 
-static void copy_block(struct cache_c *dmc, struct dm_io_region src,
+static void copy_block(struct hystor_c *dmc, struct dm_io_region src,
 	                   struct dm_io_region dest, struct cacheblock *cacheblock)
 {
 	DPRINTK("Copying: %llu:%llu->%llu:%llu",
@@ -819,7 +819,7 @@ static void copy_block(struct cache_c *dmc, struct dm_io_region src,
 			(dm_kcopyd_notify_fn) copy_callback, (void *)cacheblock);
 }
 
-static void write_back(struct cache_c *dmc, sector_t index, unsigned int length)
+static void write_back(struct hystor_c *dmc, sector_t index, unsigned int length)
 {
 	struct dm_io_region src, dest;
 	struct cacheblock *cacheblock = &dmc->cache[index];
@@ -848,7 +848,7 @@ static void write_back(struct cache_c *dmc, sector_t index, unsigned int length)
 /*
  * Map a block from the source device to a block in the cache device.
  */
-static unsigned long hash_block(struct cache_c *dmc, sector_t block)
+static unsigned long hash_block(struct hystor_c *dmc, sector_t block)
 {
 	unsigned long set_number, value;
 
@@ -865,7 +865,7 @@ static unsigned long hash_block(struct cache_c *dmc, sector_t block)
  * rareness of this event, it might be more efficient that other more complex
  * schemes. TODO: a more elegant solution.
  */
-static void cache_reset_counter(struct cache_c *dmc)
+static void cache_reset_counter(struct hystor_c *dmc)
 {
 	sector_t i;
 	struct cacheblock *cache = dmc->cache;
@@ -894,7 +894,7 @@ static void cache_reset_counter(struct cache_c *dmc)
  *      WRITEBACK).
  *
  */
-static int cache_lookup(struct cache_c *dmc, sector_t block,
+static int cache_lookup(struct hystor_c *dmc, sector_t block,
 	                    sector_t *cache_block)
 {
 	unsigned long set_number = hash_block(dmc, block);
@@ -963,7 +963,7 @@ static int cache_lookup(struct cache_c *dmc, sector_t block,
 /*
  * Insert a block into the cache (in the frame specified by cache_block).
  */
-static int cache_insert(struct cache_c *dmc, sector_t block,
+static int cache_insert(struct hystor_c *dmc, sector_t block,
 	                    sector_t cache_block)
 {
 	struct cacheblock *cache = dmc->cache;
@@ -982,7 +982,7 @@ static int cache_insert(struct cache_c *dmc, sector_t block,
 /*
  * Invalidate a block (specified by cache_block) in the cache.
  */
-static void cache_invalidate(struct cache_c *dmc, sector_t cache_block)
+static void cache_invalidate(struct hystor_c *dmc, sector_t cache_block)
 {
 	struct cacheblock *cache = dmc->cache;
 
@@ -999,7 +999,7 @@ static void cache_invalidate(struct cache_c *dmc, sector_t cache_block)
  *  serve the request from cache if the block is ready, or queue the request
  *  for later processing if otherwise.
  */
-static int cache_hit(struct cache_c *dmc, struct bio* bio, sector_t cache_block)
+static int cache_hit(struct hystor_c *dmc, struct bio* bio, sector_t cache_block)
 {
 	unsigned int offset = (unsigned int)(bio->bi_sector & dmc->block_mask);
 	struct cacheblock *cache = dmc->cache;
@@ -1070,7 +1070,7 @@ static int cache_hit(struct cache_c *dmc, struct bio* bio, sector_t cache_block)
 	}
 }
 
-static struct kcached_job *new_kcached_job(struct cache_c *dmc, struct bio* bio,
+static struct kcached_job *new_kcached_job(struct hystor_c *dmc, struct bio* bio,
 	                                       sector_t request_block,
                                            sector_t cache_block)
 {
@@ -1099,7 +1099,7 @@ static struct kcached_job *new_kcached_job(struct cache_c *dmc, struct bio* bio,
  *  Update the metadata; fetch the necessary block from source device;
  *  store data to cache device.
  */
-static int cache_read_miss(struct cache_c *dmc, struct bio* bio,
+static int cache_read_miss(struct hystor_c *dmc, struct bio* bio,
 	                       sector_t cache_block) {
 	struct cacheblock *cache = dmc->cache;
 	unsigned int offset, head, tail;
@@ -1150,7 +1150,7 @@ static int cache_read_miss(struct cache_c *dmc, struct bio* bio,
  *  If write-back, update the metadata; fetch the necessary block from source
  *  device; write to cache device.
  */
-static int cache_write_miss(struct cache_c *dmc, struct bio* bio, sector_t cache_block) {
+static int cache_write_miss(struct hystor_c *dmc, struct bio* bio, sector_t cache_block) {
 	struct cacheblock *cache = dmc->cache;
 	unsigned int offset, head, tail;
 	struct kcached_job *job;
@@ -1211,7 +1211,7 @@ static int cache_write_miss(struct cache_c *dmc, struct bio* bio, sector_t cache
 }
 
 /* Handle cache misses */
-static int cache_miss(struct cache_c *dmc, struct bio* bio, sector_t cache_block) {
+static int cache_miss(struct hystor_c *dmc, struct bio* bio, sector_t cache_block) {
 	if (bio_data_dir(bio) == READ)
 		return cache_read_miss(dmc, bio, cache_block);
 	else
@@ -1226,10 +1226,10 @@ static int cache_miss(struct cache_c *dmc, struct bio* bio, sector_t cache_block
 /*
  * Decide the mapping and perform necessary cache operations for a bio request.
  */
-static int cache_map(struct dm_target *ti, struct bio *bio,
+static int hystor_map(struct dm_target *ti, struct bio *bio,
 		      union map_info *map_context)
 {
-	struct cache_c *dmc = (struct cache_c *) ti->private;
+	struct hystor_c *dmc = (struct hystor_c *) ti->private;
 	sector_t request_block, cache_block = 0, offset;
 	int res;
 
@@ -1269,7 +1269,7 @@ struct meta_dmc {
 };
 
 /* Load metadata stored by previous session from disk. */
-static int load_metadata(struct cache_c *dmc) {
+static int load_metadata(struct hystor_c *dmc) {
 	struct dm_io_region where;
 	unsigned long bits;
 	sector_t dev_size = dmc->cache_dev->bdev->bd_inode->i_size >> 9;
@@ -1375,7 +1375,7 @@ static int load_metadata(struct cache_c *dmc) {
 }
 
 /* Store metadata onto disk. */
-static int dump_metadata(struct cache_c *dmc) {
+static int dump_metadata(struct hystor_c *dmc) {
 	struct dm_io_region where;
 	unsigned long bits;
 	sector_t dev_size = dmc->cache_dev->bdev->bd_inode->i_size >> 9;
@@ -1453,9 +1453,9 @@ static int dump_metadata(struct cache_c *dmc) {
  *  arg[5]: cache associativity
  *  arg[6]: write caching policy
  */
-static int cache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
+static int hystor_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
-	struct cache_c *dmc;
+	struct hystor_c *dmc;
 	unsigned int consecutive_blocks, persistence = 0;
 	sector_t localsize, i, order;
 	sector_t data_size, meta_size, dev_size;
@@ -1663,7 +1663,7 @@ bad:
 }
 
 
-static void cache_flush(struct cache_c *dmc)
+static void cache_flush(struct hystor_c *dmc)
 {
 	struct cacheblock *cache = dmc->cache;
 	sector_t i = 0;
@@ -1688,9 +1688,9 @@ static void cache_flush(struct cache_c *dmc)
 /*
  * Destroy the cache mapping.
  */
-static void cache_dtr(struct dm_target *ti)
+static void hystor_dtr(struct dm_target *ti)
 {
-	struct cache_c *dmc = (struct cache_c *) ti->private;
+	struct hystor_c *dmc = (struct hystor_c *) ti->private;
 
 	if (dmc->dirty_blocks > 0) cache_flush(dmc);
 
@@ -1720,10 +1720,10 @@ static void cache_dtr(struct dm_target *ti)
  *  Output cache stats upon request of device status;
  *  Output cache configuration upon request of table status.
  */
-static int cache_status(struct dm_target *ti, status_type_t type,
+static int hystor_status(struct dm_target *ti, status_type_t type,
 			 char *result, unsigned int maxlen)
 {
-	struct cache_c *dmc = (struct cache_c *) ti->private;
+	struct hystor_c *dmc = (struct hystor_c *) ti->private;
 	int sz = 0;
 
 	switch (type) {
@@ -1750,20 +1750,20 @@ static int cache_status(struct dm_target *ti, status_type_t type,
  *  Functions for manipulating a cache target.
  ****************************************************************************/
 
-static struct target_type cache_target = {
+static struct target_type hystor_target = {
 	.name   = "cache",
 	.version= {1, 0, 1},
 	.module = THIS_MODULE,
-	.ctr    = cache_ctr,
-	.dtr    = cache_dtr,
-	.map    = cache_map,
-	.status = cache_status,
+	.ctr    = hystor_ctr,
+	.dtr    = hystor_dtr,
+	.map    = hystor_map,
+	.status = hystor_status,
 };
 
 /*
  * Initiate a cache target.
  */
-int __init dm_cache_init(void)
+int __init dm_hystor_init(void)
 {
 	int r;
 
@@ -1778,7 +1778,7 @@ int __init dm_cache_init(void)
 	}
 	INIT_WORK(&_kcached_work, do_work);
 
-	r = dm_register_target(&cache_target);
+	r = dm_register_target(&hystor_target);
 	if (r < 0) {
 		DMERR("cache: register failed %d", r);
 		destroy_workqueue(_kcached_wq);
@@ -1790,17 +1790,17 @@ int __init dm_cache_init(void)
 /*
  * Destroy a cache target.
  */
-static void __exit dm_cache_exit(void)
+static void __exit dm_hystor_exit(void)
 {
-	dm_unregister_target(&cache_target);
+	dm_unregister_target(&hystor_target);
 
 	jobs_exit();
 	destroy_workqueue(_kcached_wq);
 }
 
-module_init(dm_cache_init);
-module_exit(dm_cache_exit);
+module_init(dm_hystor_init);
+module_exit(dm_hystor_exit);
 
-MODULE_DESCRIPTION(DM_NAME " cache target");
+MODULE_DESCRIPTION(DM_NAME " hystor target");
 MODULE_AUTHOR("Ming Zhao <mingzhao99th@gmail.com>");
 MODULE_LICENSE("GPL");
