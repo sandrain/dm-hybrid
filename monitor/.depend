@@ -1,0 +1,3 @@
+blkiomon.o: blkiomon.c blktrace.h blktrace_api.h rbtree.h jhash.h \
+ blkiomon.h stats.h
+rbtree.o: rbtree.c rbtree.h
