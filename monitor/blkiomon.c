@@ -55,7 +55,9 @@ static struct trace *vacant_traces_list = NULL;
 static int vacant_traces = 0;
 
 static struct trace *thash[2] = { NULL, NULL };
+static struct trace *thash_tail = NULL;	/* For quick appending */
 static int thash_curr = 0;
+static int thash_size = 0;
 
 static pthread_t interval_thread;
 static pthread_mutex_t thash_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -86,12 +88,26 @@ static void blkiomon_free_trace(struct trace *t)
 		free(t);
 }
 
-static void hystor_do_monitor(struct trace *tlist)
+static inline void blkiomon_free_thash(struct trace *thash)
+{
+	struct trace *tmp = thash;
+
+	while (tmp) {
+		struct trace *t = tmp;
+		tmp = tmp->next;
+		blkiomon_free_trace(t);
+	}
+}
+
+static void hystor_do_monitor(struct trace *tlist, int size)
 {
 	struct trace *tmp;
 
-	fprintf(stderr, "== Monitor [list=%d] ==\n", thash_curr);
+	fprintf(stderr, "== Monitor [list=%d (%d entries)] ==\n", thash_curr, size);
 
+	/* TODO
+	 * check if multiple bios are merged into one request
+	 */
 	for (tmp = tlist; tmp; tmp = tmp->next) {
 		char dir = tmp->bit.action & BLK_TC_ACT(BLK_TC_READ) ? 'R' : 'W';
 		fprintf(stderr, "[%c] %llu, %u\n", dir, tmp->bit.sector, tmp->bit.bytes >> 9);
@@ -102,6 +118,7 @@ static void *blkiomon_interval(void *data)
 {
 	struct timespec wake, r;
 	int finished;
+	int old_size;
 
 	clock_gettime(CLOCK_REALTIME, &wake);
 
@@ -112,16 +129,19 @@ static void *blkiomon_interval(void *data)
 			continue;
 		}
 
-		/* grab tree and make data gatherer build up another list */
+		/* grab list and make data gatherer build up another list */
 		pthread_mutex_lock(&thash_mutex);
 		finished = thash_curr;
 		thash_curr = thash_curr ? 0 : 1;
+		thash_tail = NULL;
+		old_size = thash_size;
+		thash_size = 0;
 		pthread_mutex_unlock(&thash_mutex);
 
 		/* process with trace data. */
-		hystor_do_monitor(thash[finished]);
+		hystor_do_monitor(thash[finished], old_size);
 		if (thash[finished]) {
-			blkiomon_free_trace(thash[finished]);
+			blkiomon_free_thash(thash[finished]);
 			thash[finished] = NULL;
 		}
 	}
@@ -130,8 +150,14 @@ static void *blkiomon_interval(void *data)
 
 static void blkiomon_store_trace(struct trace *t)
 {
-	t->next = thash[thash_curr];
-	thash[thash_curr] = t;
+	if (thash[thash_curr] == NULL)
+		thash[thash_curr] = t;
+	else
+		thash_tail->next = t;
+
+	thash_tail = t;
+	t->next = NULL;
+	thash_size++;
 }
 
 static inline struct trace *blkiomon_do_trace(struct trace *t)
