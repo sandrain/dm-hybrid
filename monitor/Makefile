@@ -1,6 +1,6 @@
 CC	= gcc
 CFLAGS	= -Wall -O0 -g3 -W
-ALL_CFLAGS = $(CFLAGS) -D_GNU_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64
+ALL_CFLAGS = $(CFLAGS) -D_GNU_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D__DEBUG__
 PROGS	= blkiomon
 #PROGS	= blkparse blktrace verify_blkparse blkrawverify blkiomon
 LIBS	= -lpthread

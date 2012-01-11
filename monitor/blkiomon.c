@@ -66,6 +66,13 @@ int data_is_native = -1;
 static int up = 1;
 static long sequence = 0;
 
+/* debug */
+#ifdef __DEBUG__
+#	define	dprintf(s, arg...)	fprintf(stderr, s, ##arg)
+#else
+#	define	dprintf(s, arg...)
+#endif
+
 static struct trace *blkiomon_alloc_trace(void)
 {
 	struct trace *t = vacant_traces_list;
@@ -103,11 +110,11 @@ static void hystor_do_monitor(struct trace *tlist, int size)
 {
 	struct trace *tmp;
 
-	fprintf(stderr, "== Monitor [list=%d (%d entries)] ==\n", thash_curr, size);
+	dprintf("== Monitor [list=%d (%d entries)] ==\n", thash_curr, size);
 
 	for (tmp = tlist; tmp; tmp = tmp->next) {
 		char dir = tmp->bit.action & BLK_TC_ACT(BLK_TC_READ) ? 'R' : 'W';
-		fprintf(stderr, "[%c] %llu, %u\n", dir, tmp->bit.sector, tmp->bit.bytes >> 9);
+		dprintf("[%c] %llu, %u\n", dir, tmp->bit.sector, tmp->bit.bytes >> 9);
 	}
 }
 
