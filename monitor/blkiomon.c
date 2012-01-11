@@ -1,4 +1,16 @@
 /*
+ * Hystor user-level monitor daemon.
+ *
+ * Author(s): Hyogi Sim <sandrain@gmail.com>
+ *
+ * TODO:
+ * - Block Table.
+ * - Generate the remapped-list for reorganization.
+ * - Sending the remapped-list to our kernel module.
+ * - Daemonize the program.
+ *
+ * =========================================================================
+ * From the original author:
  * I/O monitor based on block queue trace data
  *
  * Copyright IBM Corp. 2008
