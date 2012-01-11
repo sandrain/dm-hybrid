@@ -148,25 +148,41 @@ static void *blkiomon_interval(void *data)
 	return data;
 }
 
-static void blkiomon_store_trace(struct trace *t)
+static inline void blkiomon_store_trace(struct trace *t)
 {
-	if (thash[thash_curr] == NULL)
+	if (thash[thash_curr] == NULL) {
 		thash[thash_curr] = t;
-	else
+	}
+	else {
 		thash_tail->next = t;
+	}
 
 	thash_tail = t;
 	t->next = NULL;
 	thash_size++;
 }
 
-static inline struct trace *blkiomon_do_trace(struct trace *t)
+/* If we have a consecutive request, we update the previous request
+ * and don't append the request to the list. */
+static struct trace *blkiomon_do_trace(struct trace *t)
 {
 	int act = t->bit.action & 0xffff;
 
 	if ((t->bit.action & BLK_TC_ACT(BLK_TC_QUEUE)) && act == __BLK_TA_QUEUE) {
 		if (t->bit.sector == 0 && t->bit.bytes == 0)
 			return t;
+
+		if (thash_tail) {
+			/* Check if we have consecutive request */
+			struct blk_io_trace *previous = &thash_tail->bit;
+			struct blk_io_trace *current = &t->bit;
+
+			if ((current->action == previous->action) &&
+			    (current->sector == previous->sector + (previous->bytes >> 9))) {
+				previous->bytes += current->bytes;
+				return t;
+			}
+		}
 
 		blkiomon_store_trace(t);
 		return blkiomon_alloc_trace();
