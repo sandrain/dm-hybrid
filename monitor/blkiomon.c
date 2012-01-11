@@ -105,9 +105,6 @@ static void hystor_do_monitor(struct trace *tlist, int size)
 
 	fprintf(stderr, "== Monitor [list=%d (%d entries)] ==\n", thash_curr, size);
 
-	/* TODO
-	 * check if multiple bios are merged into one request
-	 */
 	for (tmp = tlist; tmp; tmp = tmp->next) {
 		char dir = tmp->bit.action & BLK_TC_ACT(BLK_TC_READ) ? 'R' : 'W';
 		fprintf(stderr, "[%c] %llu, %u\n", dir, tmp->bit.sector, tmp->bit.bytes >> 9);
