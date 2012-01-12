@@ -1,6 +1,8 @@
 /*
  * Hystor user-level monitor daemon.
  *
+ * This program is based on blkiomon in blktrace package.
+ *
  * Author(s): Hyogi Sim <sandrain@gmail.com>
  *
  * TODO:
