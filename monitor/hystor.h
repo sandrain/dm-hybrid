@@ -59,12 +59,16 @@ typedef	struct hystor_bt_block	bt_block_t;
 /* initialize the hystor monitor */
 extern int hystor_init(char *mapper);
 
+/* initialize the device information.
+ * __u32 since the blk_io_trace encodes dev_t using __u32 */
+extern int hystor_dev_init(/* dev_t */ __u32 dev);
+
 /* update the block table for the request */
 extern int hystor_update_block_table(struct blk_io_trace *bit);
 
 /* generate and destory remap-list */
 extern __u32 *hystor_generate_remap_list(struct trace *tlist, int tsize, int *remap_size);
-extern void hystor_destory_remap_list(__u32 *remap_list);
+extern void hystor_destory_remap_list(__u32 *list);
 
 /* request to remap blocks */
 extern int hystor_request_remap(__u32 *list, int size);

@@ -24,6 +24,9 @@
 #include <errno.h>
 #include <math.h>	/* log2() */
 #include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "hystor.h"
 #include "hash_table.h"
@@ -51,6 +54,15 @@ static char *hystor_dm;
 
 static char *hystor_mapper;
 static int hystor_block_shift;
+
+/**************************************************************************
+ * Remap list.
+ *************************************************************************/
+
+#define	REMAP_LIST_DEFAULT_SIZE		256
+
+static int remap_list_size;
+static __u32 *remap_list;
 
 /**************************************************************************
  * In-memory block table structure.
@@ -246,8 +258,23 @@ int hystor_init(char *mapper)
 		current->bid = i + 1;
 	}
 
+	/* Create remap list */
+	remap_list_size = REMAP_LIST_DEFAULT_SIZE;
+	remap_list = (__u32 *) malloc(sizeof(__u32) * remap_list_size);
+	if (!remap_list) {
+		destroy_hash_table(bt_hash);
+		return -ENOMEM;
+	}
+
 	/* TODO: read this value using ioctl(dm-hystor) */
 	hystor_block_shift = 12;
+
+	return 0;
+}
+
+int hystor_dev_init(/* dev_t */ __u32 device)
+{
+	dev_t dev = (dev_t) device;
 
 	return 0;
 }
@@ -325,9 +352,10 @@ __u32 *hystor_generate_remap_list(struct trace *tlist, int size, int *remap_size
 	return NULL;
 }
 
-void hystor_destory_remap_list(__u32 *remap_list)
+void hystor_destory_remap_list(__u32 *list)
 {
-	remap_list = NULL;
+	if (list == NULL)
+		BUG("remap list is gone!!\n");
 }
 
 /* TODO: how should we access the resident-list??

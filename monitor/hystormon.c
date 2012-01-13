@@ -75,6 +75,7 @@ static pthread_mutex_t thash_mutex = PTHREAD_MUTEX_INITIALIZER;
 int data_is_native = -1;
 static int up = 1;
 static long sequence = 0;
+static int dev_init = 0;
 
 /* debug */
 #ifdef __DEBUG__
@@ -264,6 +265,14 @@ static int blkiomon_do_fifo(void)
 				fprintf(stderr, "blkiomon: could not read payload\n");
 				break;
 			}
+		}
+
+		if (!dev_init) {
+			if (hystor_dev_init(t->dev) < 0) {
+				fprintf(stderr, "failed to read the device information\n");
+				break;
+			}
+			dev_init = 1;
 		}
 
 		t->sequence = sequence++;

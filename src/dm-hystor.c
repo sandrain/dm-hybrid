@@ -1263,7 +1263,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio,
 }
 
 struct meta_dmc {
-	sector_t size;
+	sector_t size;		/* cache size */
 	unsigned int block_size;
 	unsigned int assoc;
 	unsigned int write_policy;
@@ -1747,6 +1747,23 @@ static int cache_status(struct dm_target *ti, status_type_t type,
 	return 0;
 }
 
+static int cache_message(struct dm_target *ti, unsigned argc, char **argv)
+{
+	int i;
+	//struct cache_c *dmc = (struct cache_c *) ti->private;
+
+	for (i = 0; i < argc; i++)
+		DMINFO("message_received: %s", argv[i]);
+
+	return 0;
+}
+
+static int cache_ioctl(struct dm_target *ti, unsigned int cmd,
+			unsigned long arg)
+{
+	struct cache_c *dmc = (struct cache_c *) ti->private;
+	return __blkdev_driver_ioctl(dmc->src_dev->bdev, dmc->src_dev->mode, cmd, arg);
+}
 
 /****************************************************************************
  *  Functions for manipulating a cache target.
@@ -1760,6 +1777,8 @@ static struct target_type cache_target = {
 	.dtr    = cache_dtr,
 	.map    = cache_map,
 	.status = cache_status,
+	.message = cache_message,
+	.ioctl	= cache_ioctl,
 };
 
 /*
