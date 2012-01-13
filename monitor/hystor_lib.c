@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <math.h>	/* log2() */
 #include <sys/ioctl.h>
 
 #include "hystor.h"
@@ -183,9 +184,19 @@ static inline void update_bte_counter(__u32 *entry, __u16 ib)
 	set_bte_counter(entry, counter + ib);
 }
 
-static inline __u16 inverse_bitmap(__u32 size)
+/* The calculation of ib(inverse bitmap):
+ *	N = (number of sectors requested)
+ *	m = max(0, 7 - floor(log2(N)))
+ *	ib = 1 << m; // pow(2, m)
+ *
+ * In fact, the result of inverse bitmap is always fits with
+ * __u8.
+ */
+static inline __u16 inverse_bitmap(__u32 nsectors)
 {
-	return size/size;
+	int order = 7 - (int) floor(log2((double) nsectors));
+
+	return order < 0 ? 1 : (__u16) (1 << order);
 }
 
 /*
