@@ -133,4 +133,13 @@ struct blk_user_trace_setup {
 #define BLKTRACESTOP _IO(0x12,117)
 #define BLKTRACETEARDOWN _IO(0x12,118)
 
+/* This definition is moved to here from hystormon.c, since we
+ * need this structure in hystor_lib.c. Agly solution, but works.
+ */
+struct trace {
+	struct blk_io_trace bit;
+	struct trace *next;
+	long sequence;
+};
+
 #endif

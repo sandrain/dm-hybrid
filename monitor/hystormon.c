@@ -56,11 +56,6 @@
 #include "blkiomon.h"
 #include "hystor.h"
 
-struct trace {
-	struct blk_io_trace bit;
-	struct trace *next;
-	long sequence;
-};
 
 static FILE *ifp;
 static int interval = -1;
@@ -124,6 +119,9 @@ static inline void blkiomon_free_thash(struct trace *thash)
 static void hystor_do_monitor(struct trace *tlist, int size)
 {
 	struct trace *tmp;
+	__u32 *remap_list;
+	int remap_size;
+
 
 	dprintf("== Monitor [list=%d (%d entries)] ==\n", thash_curr, size);
 
@@ -133,6 +131,16 @@ static void hystor_do_monitor(struct trace *tlist, int size)
 
 		hystor_update_block_table(&tmp->bit);
 	}
+
+	remap_list = hystor_generate_remap_list(tlist, size, &remap_size);
+	if (remap_list == NULL) {
+		//fprintf(stderr, "failed to generate remap list!\n");
+		return;
+	}
+	if (hystor_request_remap(remap_list, remap_size) < 0)
+		fprintf(stderr, "failed to request the remapping! (size=%d)\n", remap_size);
+
+	hystor_destory_remap_list(remap_list);
 }
 
 static void *blkiomon_interval(void *data)

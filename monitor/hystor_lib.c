@@ -313,12 +313,33 @@ int hystor_update_block_table(struct blk_io_trace *bit)
 	return 0;
 }
 
-/* TODO: how should we access the resident-list?? */
+/* TODO: This function should work as program 1 of the Hystor paper (5.4).
+ * And to do that, we should be able to access the number of availble
+ * blocks in SSD.
+ */
+__u32 *hystor_generate_remap_list(struct trace *tlist, int size, int *remap_size)
+{
+	if (tlist == NULL || size == 0)
+		return NULL;
+	*remap_size = 0;
+	return NULL;
+}
+
+void hystor_destory_remap_list(__u32 *remap_list)
+{
+	remap_list = NULL;
+}
+
+/* TODO: how should we access the resident-list??
+ * returns number of blocks requested to be moved.
+ */
 int hystor_request_remap(__u32 *list, int size)
 {
-	if (!list || !size)
+	int done = size;
+
+	if (list == NULL)
 		return 0;
 
-	return size;
+	return done;
 }
 
