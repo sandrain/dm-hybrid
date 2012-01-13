@@ -54,6 +54,7 @@
 #include "rbtree.h"
 #include "jhash.h"
 #include "blkiomon.h"
+#include "hystor.h"
 
 struct trace {
 	struct blk_io_trace bit;
@@ -129,6 +130,8 @@ static void hystor_do_monitor(struct trace *tlist, int size)
 	for (tmp = tlist; tmp; tmp = tmp->next) {
 		char dir = tmp->bit.action & BLK_TC_ACT(BLK_TC_READ) ? 'R' : 'W';
 		dprintf("[%c] %llu, %u\n", dir, tmp->bit.sector, tmp->bit.bytes >> 9);
+
+		hystor_update_block_table(&tmp->bit);
 	}
 }
 
@@ -310,6 +313,9 @@ int main(int argc, char *argv[])
 		perror("blkiomon: could not open stdin for reading");
 		return 1;
 	}
+
+	/* init the hystor */
+	hystor_init(NULL);
 
 	if (pthread_create(&interval_thread, NULL, blkiomon_interval, NULL)) {
 		fprintf(stderr, "blkiomon: could not create thread");

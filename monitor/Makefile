@@ -10,7 +10,7 @@ all: $(PROGS)
 %.o: %.c
 	$(CC) -o $*.o -c $(ALL_CFLAGS) $<
 
-hystormon: hystormon.o hystor_lib.o rbtree.o hash_table.h
+hystormon: hystormon.o hystor_lib.o rbtree.o hash_table.h hystor.h
 	$(CC) $(ALL_CFLAGS) -o $@ $(filter %.o,$^) $(LIBS) -lrt
 
 clean:
