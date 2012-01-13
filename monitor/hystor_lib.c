@@ -28,22 +28,6 @@
 #include "hystor.h"
 #include "hash_table.h"
 
-#define	BT_HASH_SIZE		256
-
-struct hystor_info {
-	dev_t	source;
-	dev_t	cache;
-	int	blocksize;
-};
-
-
-#if 0
-/* TODO:
- * implement getting device information using ioctl
- */
-static char *hystor_dm;
-#endif
-
 #ifdef	__DEBUG__
 #  define	BUG(s, arg...)		\
 			do { fprintf(stderr, s, ##arg); exit(-1); } while (0)
@@ -51,19 +35,53 @@ static char *hystor_dm;
 #  define	BUG(s, arg...)
 #endif
 
-static int hystor_block_shift;
-static char *hystor_mapper;
-
-/*
- * in-memory block table implementation
- *
- * LBN split:	bgd(13), bmd(9), bte(10)
+#if 0
+/* TODO:
+ * implement getting device information using ioctl
  */
+
+struct hystor_info {
+	dev_t	source;
+	dev_t	cache;
+	int	blocksize;
+};
+
+static char *hystor_dm;
+#endif
+
+static char *hystor_mapper;
+static int hystor_block_shift;
+
+/**************************************************************************
+ * In-memory block table structure.
+ *************************************************************************/
+
+/* The __u32 lbn (Logical Block Address) is split as follows:
+ *	lbn { bgd:13; bmd:9; bte:10 };
+ *
+ * And our metadata blocks are always 4KB. 16 BGD blocks are statically
+ * allocated. Other blocks (BMD, BTE) are alocated dynamically and we keep
+ * them using a hash table.
+ *
+ * TODO:
+ * In the Hystor paper, the block table is stored in a ssd and entries are
+ * fetched on demand.
+ */
+
+#define	BT_HASH_SIZE		256
 
 static hash_table_t *bt_hash;
 /* BGD blocks are not inserted to hash table */
 static bt_block_t bgd_blocks[HYSTOR_BGD_BLOCKS];
-static __u32 alloc_sequence = 1; /* index of most recently allocated block */
+
+/**************************************************************************
+ * Block allocation/de-allocation for block table.
+ *************************************************************************/
+
+/* Index of most recently allocated block, this value is stored in
+ * bt_block_t structure (bid field).
+ */
+static __u32 alloc_sequence = 1;
 
 static bt_block_t *allocate_bt_blocks(int count)
 {
@@ -80,7 +98,7 @@ static bt_block_t *allocate_bt_blocks(int count)
 		__u32 key;
 		blocks[i].bid = ++alloc_sequence;
 		key = blocks[i].bid;
-		if (hash_insert(bt_hash, &key, sizeof(key), &blocks[i]) == FALSE) {
+		if (!hash_insert(bt_hash, &key, sizeof(key), &blocks[i])) {
 			free(blocks);
 			alloc_sequence -= (i + 1);
 			return NULL;
@@ -97,6 +115,12 @@ static inline bt_block_t *allocate_bt_block(block_type_t type)
 	block->type = type;
 	return block;
 }
+
+/**************************************************************************
+ * Access/manipulate block table entries.
+ *************************************************************************/
+
+/* TODO: should we rewrite these functions using macro?? */
 
 static inline __u32 sector_to_lbn(__u64 sector)
 {
@@ -181,6 +205,10 @@ static inline void update_bte_counter(__u32 *entry, __u16 ib)
 	set_bte_counter(entry, counter + ib);
 }
 
+/**************************************************************************
+ * Calculation of inverse bitmap.
+ *************************************************************************/
+
 /* The calculation of ib(inverse bitmap):
  *	N = (number of sectors requested)
  *	m = max(0, 7 - floor(log2(N)))
@@ -196,9 +224,9 @@ static inline __u16 inverse_bitmap(__u32 nsectors)
 	return order < 0 ? 1 : (__u16) (1 << order);
 }
 
-/*
- * external interfaces
- */
+/**************************************************************************
+ * External interfaces.
+ *************************************************************************/
 
 int hystor_init(char *mapper)
 {
@@ -285,6 +313,7 @@ int hystor_update_block_table(struct blk_io_trace *bit)
 	return 0;
 }
 
+/* TODO: how should we access the resident-list?? */
 int hystor_request_remap(__u32 *list, int size)
 {
 	if (!list || !size)
