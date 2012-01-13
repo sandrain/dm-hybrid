@@ -44,15 +44,12 @@ struct hystor_info {
 static char *hystor_dm;
 #endif
 
-#if 0
 #ifdef	__DEBUG__
 #  define	BUG(s, arg...)		\
 			do { fprintf(stderr, s, ##arg); exit(-1); } while (0)
 #else
-#  define	BUG
+#  define	BUG(s, arg...)
 #endif
-#endif
-#define		BUG(a, arg...)		do {} while(0)
 
 static int hystor_block_shift;
 static char *hystor_mapper;
@@ -256,10 +253,8 @@ int hystor_update_block_table(struct blk_io_trace *bit)
 	}
 	else {
 		bmd = find_bt_block(sequence);
-		if (bmd == NULL) {
-			BUG();
-			return -1;
-		}
+		if (bmd == NULL)
+			BUG("failed to find the bmd block! (seq=%llu)\n", sequence);
 	}
 
 	/* BMD */
@@ -278,10 +273,8 @@ int hystor_update_block_table(struct blk_io_trace *bit)
 	}
 	else {
 		bte = find_bt_block(sequence);
-		if (bte == NULL) {
-			BUG();
-			return -1;
-		}
+		if (bte == NULL)
+			BUG("failed to find the bte block! (seq=%llu)\n", sequence);
 	}
 
 	/* BTE */
