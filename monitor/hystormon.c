@@ -124,7 +124,8 @@ static void hystor_do_monitor(struct trace *tlist, int size)
 	int remap_size;
 
 
-	dprintf("== Monitor [list=%d (%d entries)] ==\n", thash_curr, size);
+	dprintf("== Monitor [list=%d (%d entries)] ==\n", 
+		thash_curr ? 0 : 1, size);
 
 	for (tmp = tlist; tmp; tmp = tmp->next) {
 		char dir = tmp->bit.action & BLK_TC_ACT(BLK_TC_READ) ? 'R' : 'W';
@@ -180,16 +181,18 @@ static void *blkiomon_interval(void *data)
 
 static inline void blkiomon_store_trace(struct trace *t)
 {
-	if (thash[thash_curr] == NULL) {
+	pthread_mutex_lock(&thash_mutex);
+
+	if (thash[thash_curr] == NULL)
 		thash[thash_curr] = t;
-	}
-	else {
+	else
 		thash_tail->next = t;
-	}
 
 	thash_tail = t;
 	t->next = NULL;
 	thash_size++;
+
+	pthread_mutex_unlock(&thash_mutex);
 }
 
 /* If we have a consecutive request, we update the previous request
@@ -267,6 +270,7 @@ static int blkiomon_do_fifo(void)
 			}
 		}
 
+#if 0
 		if (!dev_init) {
 			if (hystor_dev_init(t->dev) < 0) {
 				fprintf(stderr, "failed to read the device information\n");
@@ -274,6 +278,7 @@ static int blkiomon_do_fifo(void)
 			}
 			dev_init = 1;
 		}
+#endif
 
 		t->sequence = sequence++;
 

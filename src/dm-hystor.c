@@ -34,9 +34,11 @@
 #include <linux/bio.h>
 #include <linux/slab.h>
 #include <linux/hash.h>
+#include <linux/debugfs.h>
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
 #include <linux/pagemap.h>
+#include <linux/mm.h>
 #include "dm.h"
 #include <linux/dm-io.h>
 #include <linux/dm-kcopyd.h>
@@ -105,6 +107,10 @@ struct cache_c {
 	atomic_t nr_jobs;		/* Number of I/O jobs */
 	struct dm_io_client *io_client;   /* Client memory pool*/
 
+	/* Debugfs entry
+	 * - for reading incoming requests from user-space monitor program */
+	struct hystor_debugfs_info *debugfs;
+
 	/* Stats */
 	unsigned long reads;		/* Number of reads */
 	unsigned long writes;		/* Number of writes */
@@ -141,6 +147,13 @@ struct kcached_job {
 	struct page_list *pages;
 };
 
+struct hystor_debugfs_info {
+	struct dentry *entry;
+	char *data;
+	int requests;
+};
+
+static struct dentry *hystor_debugfs;
 
 /****************************************************************************
  * TODO: Do not use these wrappers!!
@@ -993,6 +1006,9 @@ static void cache_invalidate(struct cache_c *dmc, sector_t cache_block)
 	clear_state(cache[cache_block].state, VALID);
 }
 
+/* TODO:
+ * we need another function that moves a cache block to MRU */
+
 /*
  * Handle a cache hit:
  *  For READ, serve the request from cache is the block is ready; otherwise,
@@ -1444,6 +1460,88 @@ static int dump_metadata(struct cache_c *dmc) {
 	return 0;
 }
 
+/****************************************************************************
+ *  Handling debugfs entry
+ ****************************************************************************/
+
+static void hystor_mmap_open(struct vm_area_struct *vma)
+{
+}
+
+static void hystor_mmap_close(struct vm_area_struct *vma)
+{
+}
+
+static int hystor_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+{
+	struct page *page;
+	struct cache_c *dmc = (struct cache_c *) vma->vm_private_data;
+	struct hystor_debugfs_info *dinfo = dmc->debugfs;
+
+	if (!dinfo->data)
+		return VM_FAULT_OOM;
+
+	page = virt_to_page(dinfo->data);
+	get_page(page);
+
+	vmf->page = page;
+
+	return 0;
+}
+
+static struct vm_operations_struct hystor_mmap_vmops = {
+	.open	 	= hystor_mmap_open,
+	.close		= hystor_mmap_close,
+	.fault		= hystor_mmap_fault,
+};
+
+static int hystor_debugfs_open(struct inode *inode, struct file *filp)
+{
+	struct cache_c *dmc = (struct cache_c *) inode->i_private;
+
+	filp->private_data = dmc;
+
+	return 0;
+}
+
+static int hystor_debugfs_release(struct inode *inode, struct file *filp)
+{
+	int i;
+	struct cache_c *dmc = (struct cache_c *) inode->i_private;
+	struct hystor_debugfs_info *dinfo = dmc->debugfs;
+	__u32 *blocks = (__u32 *) dinfo->data;
+
+	dinfo->requests++;
+
+	printk("[hystor] Block remap request:===================\n");
+
+	for (i = 0; i < 1024; i++) {
+		if (blocks[i] == 0xffffffff)
+			break;
+		printk("%u\n", blocks[i]);
+	}
+
+	filp->private_data = NULL;
+
+	return 0;
+}
+
+static int hystor_debugfs_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	vma->vm_ops = &hystor_mmap_vmops;
+	vma->vm_flags |= VM_RESERVED;
+	vma->vm_private_data = filp->private_data;
+	hystor_mmap_open(vma);
+
+	return 0;
+}
+
+static struct file_operations hystor_debugfs_fops = {
+	.open		= hystor_debugfs_open,
+	.release	= hystor_debugfs_release,
+	.mmap		= hystor_debugfs_mmap,
+};
+
 /*
  * Construct a cache mapping.
  *  arg[0]: path to source device
@@ -1462,6 +1560,7 @@ static int cache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	sector_t localsize, i, order;
 	sector_t data_size, meta_size, dev_size;
 	unsigned long long cache_size;
+	char namebuf[16];
 	int r = -EINVAL;
 
 	if (argc < 2) {
@@ -1627,7 +1726,38 @@ static int cache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad6;
 	}
 
-init:	/* Initialize the cache structs */
+init:
+	/* Create the debugfs entry */
+
+	dmc->debugfs = (struct hystor_debugfs_info *) kmalloc(
+				sizeof(struct hystor_debugfs_info), GFP_KERNEL);
+	if (dmc->debugfs == NULL) {
+		ti->error = "Unable to allocate memory";
+		r = -ENOMEM;
+		goto bad6;
+	}
+	dmc->debugfs->data = NULL;
+	dmc->debugfs->requests = 0;
+
+	dmc->debugfs->data = (char *) get_zeroed_page(GFP_KERNEL);
+	if (dmc->debugfs->data == NULL) {
+		ti->error = "Unable to allocate memory";
+		r = -ENOMEM;
+		goto bad7;
+	}
+
+	memset(namebuf, 0, sizeof(namebuf));
+	sprintf(namebuf, "%u%c", dmc->src_dev->bdev->bd_dev, '\0');
+
+	dmc->debugfs->entry = debugfs_create_file(namebuf, 0644, hystor_debugfs,
+					dmc, &hystor_debugfs_fops);
+	if (dmc->debugfs->entry == NULL) {
+		ti->error = "Failed to create debugfs entry";
+		r = -EFAULT;
+		goto bad8;
+	}
+
+	/* Initialize the cache structs */
 	for (i=0; i<dmc->size; i++) {
 		bio_list_init(&dmc->cache[i].bios);
 		if(!persistence) dmc->cache[i].state = 0;
@@ -1648,6 +1778,10 @@ init:	/* Initialize the cache structs */
 	ti->private = dmc;
 	return 0;
 
+bad8:
+	kfree(dmc->debugfs->data);
+bad7:
+	kfree(dmc->debugfs);
 bad6:
 	kcached_client_destroy(dmc);
 bad5:
@@ -1747,16 +1881,20 @@ static int cache_status(struct dm_target *ti, status_type_t type,
 	return 0;
 }
 
+#if 0
 static int cache_message(struct dm_target *ti, unsigned argc, char **argv)
 {
 	int i;
 	//struct cache_c *dmc = (struct cache_c *) ti->private;
+
+	DMINFO("hystor_message!!!");
 
 	for (i = 0; i < argc; i++)
 		DMINFO("message_received: %s", argv[i]);
 
 	return 0;
 }
+#endif
 
 static int cache_ioctl(struct dm_target *ti, unsigned int cmd,
 			unsigned long arg)
@@ -1777,7 +1915,7 @@ static struct target_type cache_target = {
 	.dtr    = cache_dtr,
 	.map    = cache_map,
 	.status = cache_status,
-	.message = cache_message,
+	/* .message = cache_message, */
 	.ioctl	= cache_ioctl,
 };
 
@@ -1799,6 +1937,12 @@ int __init dm_cache_init(void)
 	}
 	INIT_WORK(&_kcached_work, do_work);
 
+	hystor_debugfs = debugfs_create_dir("hystor", NULL);
+	if (hystor_debugfs == NULL) {
+		DMERR("failed to create debugfs entry");
+		return -EFAULT;
+	}
+
 	r = dm_register_target(&cache_target);
 	if (r < 0) {
 		DMERR("cache: register failed %d", r);
@@ -1813,6 +1957,8 @@ int __init dm_cache_init(void)
  */
 static void __exit dm_cache_exit(void)
 {
+	debugfs_remove_recursive(hystor_debugfs);
+
 	dm_unregister_target(&cache_target);
 
 	jobs_exit();

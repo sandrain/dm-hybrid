@@ -26,6 +26,8 @@
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #include "hystor.h"
@@ -272,12 +274,14 @@ int hystor_init(char *mapper)
 	return 0;
 }
 
+#if 0
 int hystor_dev_init(/* dev_t */ __u32 device)
 {
 	dev_t dev = (dev_t) device;
 
 	return 0;
 }
+#endif
 
 int hystor_update_block_table(struct blk_io_trace *bit)
 {
@@ -346,10 +350,20 @@ int hystor_update_block_table(struct blk_io_trace *bit)
  */
 __u32 *hystor_generate_remap_list(struct trace *tlist, int size, int *remap_size)
 {
+	int i;
+	int min = min(size, remap_list_size);
+
 	if (tlist == NULL || size == 0)
 		return NULL;
-	*remap_size = 0;
-	return NULL;
+
+	memset(remap_list, 0, sizeof(__u32) * remap_list_size);
+
+	for (i = 0; i < min; i++) {
+		remap_list[i] = tlist[i].bit.sector;
+	}
+
+	*remap_size = min;
+	return remap_list;
 }
 
 void hystor_destory_remap_list(__u32 *list)
@@ -363,11 +377,37 @@ void hystor_destory_remap_list(__u32 *list)
  */
 int hystor_request_remap(__u32 *list, int size)
 {
-	int done = size;
+	int i = 0;
+	int fd;
+	char *address;
+	__u32 *blks;
 
-	if (list == NULL)
-		return 0;
+	fd = open("/sys/kernel/debug/hystor/8388624", O_RDWR);
+	if (fd < 0) {
+		perror("open");
+		return -1;
+	}
 
-	return done;
+	address = mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+	if (address == MAP_FAILED) {
+		perror("mmap");
+		return -1;
+	}
+
+	blks = (__u32 *) address;
+
+	fprintf(stderr, "request remap (%d blocks): \n", size);
+
+	for (i = 0; i < size; i++) {
+		fprintf(stderr, "%u\n", list[i]);
+		blks[i] = list[i];
+	}
+
+	blks[i] = 0xffffffff;
+
+	munmap(address, 4096);
+	close(fd);	/* Actual request happens here */
+
+	return size;
 }
 
