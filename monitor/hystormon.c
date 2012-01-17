@@ -75,7 +75,7 @@ static pthread_mutex_t thash_mutex = PTHREAD_MUTEX_INITIALIZER;
 int data_is_native = -1;
 static int up = 1;
 static long sequence = 0;
-static int dev_init = 0;
+//static int dev_init = 0;
 
 /* debug */
 #ifdef __DEBUG__
@@ -108,13 +108,16 @@ static void blkiomon_free_trace(struct trace *t)
 
 static inline void blkiomon_free_thash(struct trace *thash)
 {
-	struct trace *tmp = thash;
+	struct trace *tmp;
 
+	pthread_mutex_lock(&thash_mutex);
+	tmp = thash;
 	while (tmp) {
 		struct trace *t = tmp;
 		tmp = tmp->next;
 		blkiomon_free_trace(t);
 	}
+	pthread_mutex_unlock(&thash_mutex);
 }
 
 static void hystor_do_monitor(struct trace *tlist, int size)
@@ -123,8 +126,7 @@ static void hystor_do_monitor(struct trace *tlist, int size)
 	__u32 *remap_list;
 	int remap_size;
 
-
-	dprintf("== Monitor [list=%d (%d entries)] ==\n", 
+	dprintf("== Monitor [list=%d (%d entries)] ==\n",
 		thash_curr ? 0 : 1, size);
 
 	for (tmp = tlist; tmp; tmp = tmp->next) {
@@ -134,7 +136,7 @@ static void hystor_do_monitor(struct trace *tlist, int size)
 		hystor_update_block_table(&tmp->bit);
 	}
 
-	remap_list = hystor_generate_remap_list(tlist, size, &remap_size);
+	remap_list = hystor_generate_remap_list(tlist, &remap_size);
 	if (remap_list == NULL) {
 		//fprintf(stderr, "failed to generate remap list!\n");
 		return;
@@ -171,6 +173,7 @@ static void *blkiomon_interval(void *data)
 
 		/* process with trace data. */
 		hystor_do_monitor(thash[finished], old_size);
+
 		if (thash[finished]) {
 			blkiomon_free_thash(thash[finished]);
 			thash[finished] = NULL;

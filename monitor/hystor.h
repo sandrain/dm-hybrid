@@ -67,7 +67,7 @@ extern int hystor_dev_init(/* dev_t */ __u32 dev);
 extern int hystor_update_block_table(struct blk_io_trace *bit);
 
 /* generate and destory remap-list */
-extern __u32 *hystor_generate_remap_list(struct trace *tlist, int tsize, int *remap_size);
+extern __u32 *hystor_generate_remap_list(struct trace *tlist, int *remap_size);
 extern void hystor_destory_remap_list(__u32 *list);
 
 /* request to remap blocks */

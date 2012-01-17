@@ -348,21 +348,24 @@ int hystor_update_block_table(struct blk_io_trace *bit)
  * And to do that, we should be able to access the number of availble
  * blocks in SSD.
  */
-__u32 *hystor_generate_remap_list(struct trace *tlist, int size, int *remap_size)
+__u32 *hystor_generate_remap_list(struct trace *tlist, int *remap_size)
 {
-	int i;
-	int min = min(size, remap_list_size);
+	int i = 0;
+	int count = 0;
+	struct trace *tmp;
 
-	if (tlist == NULL || size == 0)
+	if (tlist == NULL)
 		return NULL;
 
 	memset(remap_list, 0, sizeof(__u32) * remap_list_size);
 
-	for (i = 0; i < min; i++) {
-		remap_list[i] = tlist[i].bit.sector;
+	for (tmp = tlist; tmp; tmp = tmp->next) {
+		remap_list[i++] = tmp->bit.sector;
+		if (++count == remap_list_size)
+			break;
 	}
 
-	*remap_size = min;
+	*remap_size = count;
 	return remap_list;
 }
 
