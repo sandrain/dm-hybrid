@@ -239,6 +239,32 @@ static inline __u16 inverse_bitmap(__u32 nsectors)
 }
 
 /**************************************************************************
+ * Read information from debugfs entry.
+ *************************************************************************/
+
+static char free_block_namebuf[64];
+
+static __u32 get_number_of_free_blocks(char *hid)
+{
+	FILE *fp;
+	__u32 res;
+
+	memset(free_block_namebuf, 0, sizeof(free_block_namebuf));
+	sprintf(free_block_namebuf, "/sys/kernel/debug/hystor/%s/free", hid);
+
+	fp = fopen(free_block_namebuf, "r");
+	if (fp == NULL)
+		return 0xffffffff;
+
+	if (fscanf(fp, "%u", &res) != 1)
+		res = 0xffffffff;
+
+	fclose(fp);
+
+	return res;
+}
+
+/**************************************************************************
  * External interfaces.
  *************************************************************************/
 
@@ -353,9 +379,18 @@ __u32 *hystor_generate_remap_list(struct trace *tlist, int *remap_size)
 	int i = 0;
 	int count = 0;
 	struct trace *tmp;
+	__u32 free_blocks;
 
 	if (tlist == NULL)
 		return NULL;
+
+	/* TODO: the parameter should be generated dynamically. */
+	free_blocks = get_number_of_free_blocks("8388624");
+
+	if (free_blocks == 0xffffffff)
+		return NULL;
+
+	fprintf(stderr, "Free blocks = %u\n", free_blocks);
 
 	memset(remap_list, 0, sizeof(__u32) * remap_list_size);
 

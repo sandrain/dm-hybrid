@@ -1567,10 +1567,10 @@ static ssize_t hystor_free_read(struct file *filp, char __user *buf,
 	char tmpbuf[12];
 	struct cache_c *dmc = (struct cache_c *) filp->private_data;
 
-	printk("[hystor] free_blocks = %u\n", (__u32) dmc->free_blocks);
-
 	if (*offset != 0)
 		return 0;
+
+	printk("[hystor] free_blocks = %u\n", (__u32) dmc->free_blocks);
 
 	memset(tmpbuf, 0, sizeof(tmpbuf));
 	datalen = sprintf(tmpbuf, "%u\n", (__u32) dmc->free_blocks);
