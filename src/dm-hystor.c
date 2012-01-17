@@ -1570,16 +1570,16 @@ static ssize_t hystor_free_read(struct file *filp, char __user *buf,
 	printk("[hystor] free_blocks = %u\n", (__u32) dmc->free_blocks);
 
 	if (*offset != 0)
-		return -EINVAL;
+		return 0;
 
 	memset(tmpbuf, 0, sizeof(tmpbuf));
-	datalen = sprintf(tmpbuf, "%u", (__u32) dmc->free_blocks);
+	datalen = sprintf(tmpbuf, "%u\n", (__u32) dmc->free_blocks);
 
 	if (copy_to_user(buf, tmpbuf, datalen))
 		return -EFAULT;
 	*offset += datalen;
 
-	return 0;
+	return datalen;
 }
 
 static struct file_operations hystor_free_fops = {
