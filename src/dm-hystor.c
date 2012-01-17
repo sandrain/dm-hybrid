@@ -1,4 +1,18 @@
 /****************************************************************************
+ *  dm-hystor.c
+ *  Device mapper target for Hystor.
+ *
+ *  TODO:
+ *   - Implemnt the 'reorganizing blocks asynchronously'.
+ *   - Modify the cache management code. (associativity??)
+ *   - The resident list.
+ *   - The writeback area.
+ *
+ *  Author(s): Hyogi Sim <sandrain@gmail.com>
+ *
+ ****************************************************************************
+ * The messsage from original authors:
+ ****************************************************************************
  *  dm-cache.c
  *  Device mapper target for block-level disk caching
  *
@@ -43,7 +57,7 @@
 #include <linux/dm-io.h>
 #include <linux/dm-kcopyd.h>
 
-#define DMC_DEBUG 0
+#define DMC_DEBUG 1
 
 #define DM_MSG_PREFIX "hystor"
 #define DMC_PREFIX "dm-hystor: "
@@ -122,6 +136,8 @@ struct cache_c {
 };
 
 /* Cache block metadata structure */
+/* TODO: we can use the counter field to store something, maybe one of BlockTable
+ * data?? */
 struct cacheblock {
 	spinlock_t lock;	/* Lock to protect operations on the bio list */
 	sector_t block;		/* Sector number of the cached block */
@@ -438,8 +454,8 @@ static int do_fetch(struct kcached_job *job)
 	tail = to_bytes(dmc->block_size) - bio->bi_size - head;
 
 	DPRINTK("do_fetch: %llu(%llu->%llu,%llu), head:%u,tail:%u",
-	        bio->bi_sector, job->src.sector, job->dest.sector,
-	        job->src.count, head, tail);
+	        (__u64) bio->bi_sector, (__u64) job->src.sector, (__u64) job->dest.sector,
+	        (__u64) job->src.count, head, tail);
 
 	if (bio_data_dir(bio) == READ) { /* The original request is a READ */
 		if (0 == job->nr_pages) { /* The request is aligned to cache block */
@@ -578,8 +594,8 @@ static int do_store(struct kcached_job *job)
 	tail = to_bytes(dmc->block_size) - bio->bi_size - head;
 
 	DPRINTK("do_store: %llu(%llu->%llu,%llu), head:%u,tail:%u",
-	        bio->bi_sector, job->src.sector, job->dest.sector,
-	        job->src.count, head, tail);
+	        (__u64) bio->bi_sector, (__u64) job->src.sector, (__u64) job->dest.sector,
+	        (__u64) job->src.count, head, tail);
 
 	/* A READ is acknowledged as soon as the requested data is fetched, and
 	   does not have to wait for it being stored in cache. The bio is cloned
@@ -593,7 +609,7 @@ static int do_store(struct kcached_job *job)
 		for (i=bio->bi_idx; i<bio->bi_vcnt; i++) {
 			get_page(bio->bi_io_vec[i].bv_page);
 		}
-		DPRINTK("bio ended for %llu:%u", bio->bi_sector, bio->bi_size);
+		DPRINTK("bio ended for %llu:%u", (__u64) bio->bi_sector, bio->bi_size);
 		bio_endio(bio, 0);
 		bio = clone;
 		job->bio = clone;
@@ -700,7 +716,7 @@ static void flush_bios(struct cacheblock *cacheblock)
 		n = bio->bi_next;
 		bio->bi_next = NULL;
 		DPRINTK("Flush bio: %llu->%llu (%u bytes)",
-		        cacheblock->block, bio->bi_sector, bio->bi_size);
+		        (__u64) cacheblock->block, (__u64) bio->bi_sector, bio->bi_size);
 		generic_make_request(bio);
 		bio = n;
 	}
@@ -711,7 +727,7 @@ static int do_complete(struct kcached_job *job)
 	int i, r = 0;
 	struct bio *bio = job->bio;
 
-	DPRINTK("do_complete: %llu", bio->bi_sector);
+	DPRINTK("do_complete: %llu", (__u64) bio->bi_sector);
 
 	if (bio_data_dir(bio) == READ) {
 		for (i=bio->bi_idx; i<bio->bi_vcnt; i++) {
@@ -832,7 +848,8 @@ static void copy_block(struct cache_c *dmc, struct dm_io_region src,
 	                   struct dm_io_region dest, struct cacheblock *cacheblock)
 {
 	DPRINTK("Copying: %llu:%llu->%llu:%llu",
-			src.sector, src.count * 512, dest.sector, dest.count * 512);
+			(__u64) src.sector, (__u64) src.count * 512,
+			(__u64) dest.sector, (__u64) dest.count * 512);
 	dm_kcopyd_copy(dmc->kcp_client, &src, 1, &dest, 0, \
 			(dm_kcopyd_notify_fn) copy_callback, (void *)cacheblock);
 }
@@ -844,7 +861,7 @@ static void write_back(struct cache_c *dmc, sector_t index, unsigned int length)
 	unsigned int i;
 
 	DPRINTK("Write back block %llu(%llu, %u)",
-	        index, cacheblock->block, length);
+	        (__u64) index, (__u64) cacheblock->block, length);
 	src.bdev = dmc->cache_dev->bdev;
 	src.sector = index << dmc->block_shift;
 	src.count = dmc->block_size * length;
@@ -970,10 +987,10 @@ static int cache_lookup(struct cache_c *dmc, sector_t block,
 
 	if (-1 == res)
 		DPRINTK("Cache lookup: Block %llu(%lu):%s",
-	            block, set_number, "NO ROOM");
+	            (__u64) block, set_number, "NO ROOM");
 	else
 		DPRINTK("Cache lookup: Block %llu(%lu):%llu(%s)",
-		        block, set_number, *cache_block,
+		        (__u64) block, set_number, (__u64) *cache_block,
 		        1 == res ? "HIT" : (0 == res ? "MISS" : "WB NEEDED"));
 	return res;
 }
@@ -1007,7 +1024,7 @@ static void cache_invalidate(struct cache_c *dmc, sector_t cache_block)
 	struct cacheblock *cache = dmc->cache;
 
 	DPRINTK("Cache invalidate: Block %llu(%llu)",
-	        cache_block, cache[cache_block].block);
+	        (__u64) cache_block, (__u64) cache[cache_block].block);
 	clear_state(cache[cache_block].state, VALID);
 
 	dmc->free_blocks++;
@@ -1044,7 +1061,7 @@ static int cache_hit(struct cache_c *dmc, struct bio* bio, sector_t cache_block)
 
 		/* Cache block is not ready yet */
 		DPRINTK("Add to bio list %s(%llu)",
-				dmc->cache_dev->name, bio->bi_sector);
+			dmc->cache_dev->name, (__u64) bio->bi_sector);
 		bio_list_add(&cache[cache_block].bios, bio);
 
 		spin_unlock(&cache[cache_block].lock);
@@ -1069,7 +1086,7 @@ static int cache_hit(struct cache_c *dmc, struct bio* bio, sector_t cache_block)
 			/* Delay this write until the block is written back */
 			bio->bi_bdev = dmc->src_dev->bdev;
 			DPRINTK("Add to bio list %s(%llu)",
-					dmc->src_dev->name, bio->bi_sector);
+				dmc->src_dev->name, (__u64) bio->bi_sector);
 			bio_list_add(&cache[cache_block].bios, bio);
 			spin_unlock(&cache[cache_block].lock);
 			return 0;
@@ -1080,7 +1097,7 @@ static int cache_hit(struct cache_c *dmc, struct bio* bio, sector_t cache_block)
 			bio->bi_bdev = dmc->cache_dev->bdev;
 			bio->bi_sector = (cache_block << dmc->block_shift) + offset;
 			DPRINTK("Add to bio list %s(%llu)",
-					dmc->cache_dev->name, bio->bi_sector);
+				dmc->cache_dev->name, (__u64) bio->bi_sector);
 			bio_list_add(&cache[cache_block].bios, bio);
 			spin_unlock(&cache[cache_block].lock);
 			return 0;
@@ -1136,10 +1153,10 @@ static int cache_read_miss(struct cache_c *dmc, struct bio* bio,
 
 	if (cache[cache_block].state & VALID) {
 		DPRINTK("Replacing %llu->%llu",
-		        cache[cache_block].block, request_block);
+		        (__u64) cache[cache_block].block, (__u64) request_block);
 		dmc->replace++;
 	} else DPRINTK("Insert block %llu at empty frame %llu",
-		request_block, cache_block);
+			(__u64) request_block, (__u64) cache_block);
 
 	cache_insert(dmc, request_block, cache_block); /* Update metadata first */
 
@@ -1163,7 +1180,7 @@ static int cache_read_miss(struct cache_c *dmc, struct bio* bio,
 	job->rw = READ; /* Fetch data from the source device */
 
 	DPRINTK("Queue job for %llu (need %u pages)",
-	        bio->bi_sector, job->nr_pages);
+	        (__u64) bio->bi_sector, job->nr_pages);
 	queue_job(job);
 
 	return 0;
@@ -1191,10 +1208,10 @@ static int cache_write_miss(struct cache_c *dmc, struct bio* bio, sector_t cache
 
 	if (cache[cache_block].state & VALID) {
 		DPRINTK("Replacing %llu->%llu",
-		        cache[cache_block].block, request_block);
+		        (__u64) cache[cache_block].block, (__u64) request_block);
 		dmc->replace++;
 	} else DPRINTK("Insert block %llu at empty frame %llu",
-		request_block, cache_block);
+			(__u64) request_block, (__u64) cache_block);
 
 	/* Write delay */
 	cache_insert(dmc, request_block, cache_block); /* Update metadata first */
@@ -1263,7 +1280,8 @@ static int cache_map(struct dm_target *ti, struct bio *bio,
 
 	DPRINTK("Got a %s for %llu ((%llu:%llu), %u bytes)",
 	        bio_rw(bio) == WRITE ? "WRITE" : (bio_rw(bio) == READ ?
-	        "READ":"READA"), bio->bi_sector, request_block, offset,
+	        "READ":"READA"), (__u64) bio->bi_sector,
+		(__u64) request_block, (__u64) offset,
 	        bio->bi_size);
 
 	if (bio_data_dir(bio) == READ) dmc->reads++;
@@ -1284,6 +1302,10 @@ static int cache_map(struct dm_target *ti, struct bio *bio,
 
 	return 1;
 }
+
+/****************************************************************************
+ *  Functions for syncing metadata block to a persistent device (cache dev).
+ ****************************************************************************/
 
 struct meta_dmc {
 	sector_t size;		/* cache size */
@@ -1315,7 +1337,7 @@ static int load_metadata(struct cache_c *dmc) {
 	dm_io_sync_vm(1, &where, READ, meta_dmc, &bits, dmc);
 	DPRINTK("Loaded cache conf: block size(%u), cache size(%llu), " \
 	        "associativity(%u), write policy(%u), chksum(%u)",
-	        meta_dmc->block_size, meta_dmc->size,
+	        meta_dmc->block_size, (__u64) meta_dmc->size,
 	        meta_dmc->assoc, meta_dmc->write_policy,
 	        meta_dmc->chksum);
 
@@ -1453,10 +1475,10 @@ static int dump_metadata(struct cache_c *dmc) {
 	meta_dmc->free_blocks = dmc->free_blocks;
 
 	DPRINTK("Store metadata to disk: block size(%u), cache size(%llu), "
-		"free blocks (%u), "
+		"free blocks (%llu), "
 	        "associativity(%u), write policy(%u), checksum(%u)",
 	        meta_dmc->block_size, (unsigned long long) meta_dmc->size,
-		meta_dmc->free_blocks,
+		(__u64) meta_dmc->free_blocks,
 	        meta_dmc->assoc, meta_dmc->write_policy,
 	        meta_dmc->chksum);
 
@@ -1476,6 +1498,7 @@ static int dump_metadata(struct cache_c *dmc) {
  *  Handling debugfs entry
  ****************************************************************************/
 
+/* Really nothing to do with these functions?? */
 static void hystor_remap_mmap_open(struct vm_area_struct *vma)
 {
 }
@@ -1524,12 +1547,12 @@ static int hystor_remap_release(struct inode *inode, struct file *filp)
 
 	dinfo->requests++;
 
-	printk("[hystor] Block remap request:===================\n");
+	DPRINTK("Block remap request:===================");
 
 	for (i = 0; i < 1024; i++) {
 		if (blocks[i] == 0xffffffff)
 			break;
-		printk("%u\n", blocks[i]);
+		DPRINTK("%u", blocks[i]);
 	}
 
 	filp->private_data = NULL;
@@ -1570,7 +1593,7 @@ static ssize_t hystor_free_read(struct file *filp, char __user *buf,
 	if (*offset != 0)
 		return 0;
 
-	printk("[hystor] free_blocks = %u\n", (__u32) dmc->free_blocks);
+	DPRINTK("free_blocks = %u", (__u32) dmc->free_blocks);
 
 	memset(tmpbuf, 0, sizeof(tmpbuf));
 	datalen = sprintf(tmpbuf, "%u\n", (__u32) dmc->free_blocks);
@@ -1588,7 +1611,8 @@ static struct file_operations hystor_free_fops = {
 	.read		= hystor_free_read,
 };
 
-/*
+/* TODO: Verify/Rewrite the constructor!!!
+ *
  * Construct a cache mapping.
  *  arg[0]: path to source device
  *  arg[1]: path to cache device
@@ -1772,6 +1796,8 @@ static int cache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad6;
 	}
 
+	dmc->free_blocks = dmc->size;
+
 init:
 	/* Create the debugfs entry */
 
@@ -1826,7 +1852,6 @@ init:
 		dmc->cache[i].counter = 0;
 		spin_lock_init(&dmc->cache[i].lock);
 	}
-	dmc->free_blocks = dmc->size;
 
 	dmc->counter = 0;
 	dmc->dirty_blocks = 0;
@@ -1899,6 +1924,7 @@ static void cache_dtr(struct dm_target *ti)
 
 	dm_kcopyd_client_destroy(dmc->kcp_client);
 
+	/* debugfs entry */
 	debugfs_remove_recursive(dmc->debugfs->entry);
 
 	if (dmc->reads + dmc->writes > 0)
