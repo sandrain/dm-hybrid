@@ -61,7 +61,7 @@ static int hystor_block_shift;
  * Remap list.
  *************************************************************************/
 
-#define	REMAP_LIST_DEFAULT_SIZE		256
+#define	REMAP_LIST_DEFAULT_SIZE		1024
 
 static int remap_list_size;
 static __u32 *remap_list;
@@ -385,7 +385,7 @@ int hystor_request_remap(__u32 *list, int size)
 	char *address;
 	__u32 *blks;
 
-	fd = open("/sys/kernel/debug/hystor/8388624", O_RDWR);
+	fd = open("/sys/kernel/debug/hystor/8388624/remap", O_RDWR);
 	if (fd < 0) {
 		perror("open");
 		return -1;

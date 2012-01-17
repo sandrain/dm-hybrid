@@ -89,6 +89,7 @@ struct cache_c {
 
 	struct cacheblock *cache;	/* Hash table for cache blocks */
 	sector_t size;			/* Cache size */
+	sector_t free_blocks;		/* Free block count */
 	unsigned int bits;		/* Cache size in bits */
 	unsigned int assoc;		/* Cache associativity */
 	unsigned int block_size;	/* Cache block size */
@@ -149,6 +150,8 @@ struct kcached_job {
 
 struct hystor_debugfs_info {
 	struct dentry *entry;
+	struct dentry *remap;
+	struct dentry *free;
 	char *data;
 	int requests;
 };
@@ -991,6 +994,8 @@ static int cache_insert(struct cache_c *dmc, sector_t block,
 	if (dmc->counter == ULONG_MAX) cache_reset_counter(dmc);
 	cache[cache_block].counter = ++dmc->counter;
 
+	dmc->free_blocks--;
+
 	return 1;
 }
 
@@ -1004,6 +1009,8 @@ static void cache_invalidate(struct cache_c *dmc, sector_t cache_block)
 	DPRINTK("Cache invalidate: Block %llu(%llu)",
 	        cache_block, cache[cache_block].block);
 	clear_state(cache[cache_block].state, VALID);
+
+	dmc->free_blocks++;
 }
 
 /* TODO:
@@ -1280,6 +1287,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio,
 
 struct meta_dmc {
 	sector_t size;		/* cache size */
+	sector_t free_blocks;
 	unsigned int block_size;
 	unsigned int assoc;
 	unsigned int write_policy;
@@ -1316,6 +1324,7 @@ static int load_metadata(struct cache_c *dmc) {
 	dmc->block_mask = dmc->block_size - 1;
 
 	dmc->size = meta_dmc->size;
+	dmc->free_blocks = meta_dmc->free_blocks;
 	dmc->bits = ffs(dmc->size) - 1;
 
 	dmc->assoc = meta_dmc->assoc;
@@ -1441,10 +1450,13 @@ static int dump_metadata(struct cache_c *dmc) {
 	meta_dmc->assoc = dmc->assoc;
 	meta_dmc->write_policy = dmc->write_policy;
 	meta_dmc->chksum = chksum;
+	meta_dmc->free_blocks = dmc->free_blocks;
 
-	DPRINTK("Store metadata to disk: block size(%u), cache size(%llu), " \
+	DPRINTK("Store metadata to disk: block size(%u), cache size(%llu), "
+		"free blocks (%u), "
 	        "associativity(%u), write policy(%u), checksum(%u)",
 	        meta_dmc->block_size, (unsigned long long) meta_dmc->size,
+		meta_dmc->free_blocks,
 	        meta_dmc->assoc, meta_dmc->write_policy,
 	        meta_dmc->chksum);
 
@@ -1464,15 +1476,15 @@ static int dump_metadata(struct cache_c *dmc) {
  *  Handling debugfs entry
  ****************************************************************************/
 
-static void hystor_mmap_open(struct vm_area_struct *vma)
+static void hystor_remap_mmap_open(struct vm_area_struct *vma)
 {
 }
 
-static void hystor_mmap_close(struct vm_area_struct *vma)
+static void hystor_remap_mmap_close(struct vm_area_struct *vma)
 {
 }
 
-static int hystor_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+static int hystor_remap_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	struct page *page;
 	struct cache_c *dmc = (struct cache_c *) vma->vm_private_data;
@@ -1489,22 +1501,21 @@ static int hystor_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	return 0;
 }
 
-static struct vm_operations_struct hystor_mmap_vmops = {
-	.open	 	= hystor_mmap_open,
-	.close		= hystor_mmap_close,
-	.fault		= hystor_mmap_fault,
+static struct vm_operations_struct hystor_remap_mmap_vmops = {
+	.open	 	= hystor_remap_mmap_open,
+	.close		= hystor_remap_mmap_close,
+	.fault		= hystor_remap_mmap_fault,
 };
 
-static int hystor_debugfs_open(struct inode *inode, struct file *filp)
+static int hystor_remap_open(struct inode *inode, struct file *filp)
 {
 	struct cache_c *dmc = (struct cache_c *) inode->i_private;
-
 	filp->private_data = dmc;
 
 	return 0;
 }
 
-static int hystor_debugfs_release(struct inode *inode, struct file *filp)
+static int hystor_remap_release(struct inode *inode, struct file *filp)
 {
 	int i;
 	struct cache_c *dmc = (struct cache_c *) inode->i_private;
@@ -1526,20 +1537,55 @@ static int hystor_debugfs_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static int hystor_debugfs_mmap(struct file *filp, struct vm_area_struct *vma)
+static int hystor_remap_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-	vma->vm_ops = &hystor_mmap_vmops;
+	vma->vm_ops = &hystor_remap_mmap_vmops;
 	vma->vm_flags |= VM_RESERVED;
 	vma->vm_private_data = filp->private_data;
-	hystor_mmap_open(vma);
+	hystor_remap_mmap_open(vma);
 
 	return 0;
 }
 
-static struct file_operations hystor_debugfs_fops = {
-	.open		= hystor_debugfs_open,
-	.release	= hystor_debugfs_release,
-	.mmap		= hystor_debugfs_mmap,
+static struct file_operations hystor_remap_fops = {
+	.open		= hystor_remap_open,
+	.release	= hystor_remap_release,
+	.mmap		= hystor_remap_mmap,
+};
+
+
+static int hystor_free_release(struct inode *inode, struct file *filp)
+{
+	filp->private_data = NULL;
+	return 0;
+}
+
+static ssize_t hystor_free_read(struct file *filp, char __user *buf,
+				size_t len, loff_t *offset)
+{
+	int datalen;
+	char tmpbuf[12];
+	struct cache_c *dmc = (struct cache_c *) filp->private_data;
+
+	printk("[hystor] free_blocks = %u\n", (__u32) dmc->free_blocks);
+
+	if (*offset != 0)
+		return -EINVAL;
+
+	memset(tmpbuf, 0, sizeof(tmpbuf));
+	datalen = sprintf(tmpbuf, "%u", (__u32) dmc->free_blocks);
+
+	if (copy_to_user(buf, tmpbuf, datalen))
+		return -EFAULT;
+	*offset += datalen;
+
+	return 0;
+}
+
+static struct file_operations hystor_free_fops = {
+	.open		= hystor_remap_open,
+	.release	= hystor_free_release,
+	.read		= hystor_free_read,
 };
 
 /*
@@ -1749,12 +1795,28 @@ init:
 	memset(namebuf, 0, sizeof(namebuf));
 	sprintf(namebuf, "%u%c", dmc->src_dev->bdev->bd_dev, '\0');
 
-	dmc->debugfs->entry = debugfs_create_file(namebuf, 0644, hystor_debugfs,
-					dmc, &hystor_debugfs_fops);
+	dmc->debugfs->entry = debugfs_create_dir(namebuf, hystor_debugfs);
 	if (dmc->debugfs->entry == NULL) {
 		ti->error = "Failed to create debugfs entry";
 		r = -EFAULT;
 		goto bad8;
+	}
+
+	dmc->debugfs->remap = debugfs_create_file("remap", 0644,
+					dmc->debugfs->entry,
+					dmc, &hystor_remap_fops);
+	if (dmc->debugfs->remap == NULL) {
+		ti->error = "Failed to create debugfs entry";
+		r = -EFAULT;
+		goto bad9;
+	}
+	dmc->debugfs->free = debugfs_create_file("free", 0444,
+					dmc->debugfs->entry,
+					dmc, &hystor_free_fops);
+	if (dmc->debugfs->free == NULL) {
+		ti->error = "Failed to create debugfs entry";
+		r = -EFAULT;
+		goto bad9;
 	}
 
 	/* Initialize the cache structs */
@@ -1764,6 +1826,7 @@ init:
 		dmc->cache[i].counter = 0;
 		spin_lock_init(&dmc->cache[i].lock);
 	}
+	dmc->free_blocks = dmc->size;
 
 	dmc->counter = 0;
 	dmc->dirty_blocks = 0;
@@ -1778,6 +1841,8 @@ init:
 	ti->private = dmc;
 	return 0;
 
+bad9:
+	debugfs_remove_recursive(dmc->debugfs->entry);
 bad8:
 	kfree(dmc->debugfs->data);
 bad7:
@@ -1834,6 +1899,8 @@ static void cache_dtr(struct dm_target *ti)
 
 	dm_kcopyd_client_destroy(dmc->kcp_client);
 
+	debugfs_remove_recursive(dmc->debugfs->entry);
+
 	if (dmc->reads + dmc->writes > 0)
 		DMINFO("stats: reads(%lu), writes(%lu), cache hits(%lu, 0.%lu)," \
 		       "replacement(%lu), replaced dirty blocks(%lu), " \
@@ -1865,11 +1932,11 @@ static int cache_status(struct dm_target *ti, status_type_t type,
 	switch (type) {
 	case STATUSTYPE_INFO:
 		DMEMIT("stats: reads(%lu), writes(%lu), cache hits(%lu, 0.%lu)," \
-	           "replacement(%lu), replaced dirty blocks(%lu)",
+	           "replacement(%lu), replaced dirty blocks(%lu), free blocks(%u)",
 	           dmc->reads, dmc->writes, dmc->cache_hits,
 	           (dmc->reads + dmc->writes) > 0 ? \
 	           dmc->cache_hits * 100 / (dmc->reads + dmc->writes) : 0,
-	           dmc->replace, dmc->writeback);
+	           dmc->replace, dmc->writeback, (__u32) dmc->free_blocks);
 		break;
 	case STATUSTYPE_TABLE:
 		DMEMIT("conf: capacity(%lluM), associativity(%u), block size(%uK), %s",
