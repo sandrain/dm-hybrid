@@ -133,6 +133,9 @@ struct cache_c {
 	unsigned long replace;		/* Number of cache replacements */
 	unsigned long writeback;	/* Number of replaced dirty blocks */
 	unsigned long dirty;		/* Number of submitted dirty blocks */
+
+	/* TODO: Re-organize stats */
+	unsigned long writeforth;
 };
 
 /* Cache block metadata structure */
@@ -791,6 +794,7 @@ static void do_work(struct work_struct *ignored)
 	process_jobs(&_io_jobs, do_io);
 }
 
+#if 0
 static void queue_job(struct kcached_job *job)
 {
 	atomic_inc(&job->dmc->nr_jobs);
@@ -800,6 +804,7 @@ static void queue_job(struct kcached_job *job)
 		push(&_io_jobs, job);
 	wake();
 }
+#endif
 
 static int kcached_init(struct cache_c *dmc)
 {
@@ -875,6 +880,99 @@ static void write_back(struct cache_c *dmc, sector_t index, unsigned int length)
 	copy_block(dmc, src, dest, cacheblock);
 }
 
+/****************************************************************************
+ * I/O functions for remapping.
+ ****************************************************************************/
+
+/* TODO: move them somewhere else */
+/* Some prototypes we need */
+
+static void cache_invalidate(struct cache_c *dmc, sector_t cache_block);
+static int cache_insert(struct cache_c *dmc, sector_t block,
+	                    sector_t cache_block);
+static void remap_write_forth(struct cache_c *dmc, sector_t index, unsigned int length);
+
+struct remap_callback_data {
+	struct cache_c *dmc;
+	sector_t cache_block;
+	sector_t request_block;
+};
+
+static void remap_copy_callback(int read_err, unsigned int write_err, void *context)
+{
+	struct remap_callback_data *cd = (struct remap_callback_data *) context;
+
+	cache_invalidate(cd->dmc, cd->cache_block);
+	cache_insert(cd->dmc, cd->cache_block, cd->request_block);
+	remap_write_forth(cd->dmc, cd->cache_block, 1);
+	cd->dmc->writeforth++;
+
+	vfree(cd);
+}
+
+static void remap_write_back(struct cache_c *dmc, sector_t index,
+			unsigned int length /* length is always 1 */,
+			sector_t request_block)
+{
+	struct dm_io_region src, dest;
+	struct cacheblock *cacheblock = &dmc->cache[index];
+	unsigned int i;
+	struct remap_callback_data *cd = (struct remap_callback_data *)
+					vmalloc(sizeof(*cd));
+
+	DPRINTK("Write back block(remap) %llu(%llu, %u)",
+	        (__u64) index, (__u64) cacheblock->block, length);
+	src.bdev = dmc->cache_dev->bdev;
+	src.sector = index << dmc->block_shift;
+	src.count = dmc->block_size * length;
+	dest.bdev = dmc->src_dev->bdev;
+	dest.sector = cacheblock->block;
+	dest.count = dmc->block_size * length;
+
+	for (i=0; i<length; i++)
+		set_state(dmc->cache[index+i].state, WRITEBACK);
+	dmc->dirty_blocks -= length;
+
+	DPRINTK("Copying(cache->src): %llu:%llu->%llu:%llu",
+			(__u64) src.sector, (__u64) src.count * 512,
+			(__u64) dest.sector, (__u64) dest.count * 512);
+
+	cd->dmc = dmc;
+	cd->cache_block = index;
+	cd->request_block = request_block;
+
+	dm_kcopyd_copy(dmc->kcp_client, &src, 1, &dest, 0,
+			(dm_kcopyd_notify_fn) remap_copy_callback, (void *) cd);
+}
+
+/* Here we have the function exactly does the opposite of write_back. Copy a block
+ * from source to cache device */
+static void remap_write_forth(struct cache_c *dmc, sector_t index, unsigned int length)
+{
+	struct dm_io_region src, dest;
+	struct cacheblock *cacheblock = &dmc->cache[index];
+	unsigned int i;
+
+	DPRINTK("Write forth block(remap) %llu(%llu, %u)",
+	        (__u64) index, (__u64) cacheblock->block, length);
+	src.bdev = dmc->src_dev->bdev;
+	src.sector = cacheblock->block;
+	src.count = dmc->block_size * length;
+	dest.bdev = dmc->cache_dev->bdev;
+	dest.sector = index << dmc->block_shift;
+	dest.count = dmc->block_size * length;
+
+	for (i = 0; i < length; i++)
+		set_state(dmc->cache[index+i].state, RESERVED);
+
+	DPRINTK("Copying(src->cache): %llu:%llu->%llu:%llu",
+			(__u64) src.sector, (__u64) src.count * 512,
+			(__u64) dest.sector, (__u64) dest.count * 512);
+
+	dm_kcopyd_copy(dmc->kcp_client, &src, 1, &dest, 0,
+			(dm_kcopyd_notify_fn) copy_callback, (void *)cacheblock);
+}
+
 
 /****************************************************************************
  *  Functions for implementing the various cache operations.
@@ -899,6 +997,9 @@ static unsigned long hash_block(struct cache_c *dmc, sector_t block)
  * counter). This seems to be a naive implementaion. However, consider the
  * rareness of this event, it might be more efficient that other more complex
  * schemes. TODO: a more elegant solution.
+ *
+ * We always select victim from same associative set. Can we just reset the
+ * counters in the same set?? (only 256 entries if the associativity is 256)
  */
 static void cache_reset_counter(struct cache_c *dmc)
 {
@@ -929,8 +1030,9 @@ static void cache_reset_counter(struct cache_c *dmc)
  *      WRITEBACK).
  *
  */
-static int cache_lookup(struct cache_c *dmc, sector_t block,
-	                    sector_t *cache_block)
+static int cache_lookup(struct cache_c *dmc,
+			sector_t block,		/* the block number */
+			sector_t *cache_block)	/* cache metadata index */
 {
 	unsigned long set_number = hash_block(dmc, block);
 	sector_t index;
@@ -1112,6 +1214,7 @@ static int cache_hit(struct cache_c *dmc, struct bio* bio, sector_t cache_block)
 	}
 }
 
+#if 0
 static struct kcached_job *new_kcached_job(struct cache_c *dmc, struct bio* bio,
 	                                       sector_t request_block,
                                            sector_t cache_block)
@@ -1259,6 +1362,7 @@ static int cache_miss(struct cache_c *dmc, struct bio* bio, sector_t cache_block
 	else
 		return cache_write_miss(dmc, bio, cache_block);
 }
+#endif
 
 
 /****************************************************************************
@@ -1290,12 +1394,17 @@ static int cache_map(struct dm_target *ti, struct bio *bio,
 	res = cache_lookup(dmc, request_block, &cache_block);
 	if (1 == res)  /* Cache hit; server request from cache */
 		return cache_hit(dmc, bio, cache_block);
+
+	/* We don't consider other cases. Just relay the request to the
+	 * source device */
+#if 0
 	else if (0 == res) /* Cache miss; replacement block is found */
 		return cache_miss(dmc, bio, cache_block);
 	else if (2 == res) { /* Entire cache set is dirty; initiate a write-back */
 		write_back(dmc, cache_block, 1);
 		dmc->writeback++;
 	}
+#endif
 
 	/* Forward to source device */
 	bio->bi_bdev = dmc->src_dev->bdev;
@@ -1540,10 +1649,11 @@ static int hystor_remap_open(struct inode *inode, struct file *filp)
 
 static int hystor_remap_release(struct inode *inode, struct file *filp)
 {
-	int i;
+	int i, res;
 	struct cache_c *dmc = (struct cache_c *) inode->i_private;
 	struct hystor_debugfs_info *dinfo = dmc->debugfs;
 	__u32 *blocks = (__u32 *) dinfo->data;
+	sector_t cache_block;
 
 	dinfo->requests++;
 
@@ -1552,7 +1662,45 @@ static int hystor_remap_release(struct inode *inode, struct file *filp)
 	for (i = 0; i < 1024; i++) {
 		if (blocks[i] == 0xffffffff)
 			break;
+
 		DPRINTK("%u", blocks[i]);
+
+		/* Check the block is already cached. */
+		/*
+		 * Return value:
+		 *  1: cache hit (cache_block stores the index of the matched block)
+		 *  0: cache miss but frame is allocated for insertion; cache_block stores the
+		 *     frame's index:
+		 *      If there are empty frames, then the first encounted is used.
+		 *      If there are clean frames, then the LRU clean block is replaced.
+		 *  2: cache miss and frame is not allocated; cache_block stores the LRU dirty
+		 *     block's index:
+		 *      This happens when the entire set is dirty.
+		 * -1: cache miss and no room for insertion:
+		 *      This happens when the entire set in transition modes (RESERVED or
+		 *      WRITEBACK).
+		 */
+		res = cache_lookup(dmc, blocks[i], &cache_block);
+
+		switch (res) {
+		case 0:
+			cache_insert(dmc, blocks[i], cache_block);
+			remap_write_forth(dmc, cache_block, 1);
+			dmc->writeforth++;
+			break;
+
+		case 1:	/* cache hit: counter is already increased by cache_lookup.
+			 * nothing more to do. */
+			break;
+
+		case 2:
+			remap_write_back(dmc, cache_block, 1, blocks[i]);
+			dmc->writeback++;
+			break;
+
+		default: /* -1: What can we do here?? TODO */
+			break;
+		}
 	}
 
 	filp->private_data = NULL;
@@ -1861,6 +2009,7 @@ init:
 	dmc->replace = 0;
 	dmc->writeback = 0;
 	dmc->dirty = 0;
+	dmc->writeforth = 0;
 
 	ti->split_io = dmc->block_size;
 	ti->private = dmc;
