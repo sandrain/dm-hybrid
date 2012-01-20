@@ -1401,11 +1401,13 @@ static int cache_map(struct dm_target *ti, struct bio *bio,
 	offset = bio->bi_sector & dmc->block_mask;
 	request_block = bio->bi_sector - offset;
 
+#if 0
 	DPRINTK("Got a %s for %llu ((%llu:%llu), %u bytes)",
 	        bio_rw(bio) == WRITE ? "WRITE" : (bio_rw(bio) == READ ?
 	        "READ":"READA"), (__u64) bio->bi_sector,
 		(__u64) request_block, (__u64) offset,
 	        bio->bi_size);
+#endif
 
 	if (bio_data_dir(bio) == READ) dmc->reads++;
 	else dmc->writes++;

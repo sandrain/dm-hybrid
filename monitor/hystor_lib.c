@@ -56,6 +56,7 @@ static char *hystor_dm;
 
 static char *hystor_mapper;
 static int hystor_block_shift;
+static unsigned int hystor_block_mask;
 
 /**************************************************************************
  * Remap list.
@@ -138,7 +139,7 @@ static inline bt_block_t *allocate_bt_block(block_type_t type)
 
 static inline __u32 sector_to_lbn(__u64 sector)
 {
-	return sector >> (hystor_block_shift - SECTOR_SHIFT);
+	return sector >> hystor_block_shift;
 }
 
 /* BGD blocks are an array of 4KB blocks. And each entry is 8 bytes.
@@ -295,7 +296,8 @@ int hystor_init(char *mapper)
 	}
 
 	/* TODO: read this value using ioctl(dm-hystor) */
-	hystor_block_shift = 12;
+	hystor_block_shift = 3;
+	hystor_block_mask = 7;
 
 	return 0;
 }
@@ -395,7 +397,7 @@ __u32 *hystor_generate_remap_list(struct trace *tlist, int *remap_size)
 	memset(remap_list, 0, sizeof(__u32) * remap_list_size);
 
 	for (tmp = tlist; tmp; tmp = tmp->next) {
-		remap_list[i++] = tmp->bit.sector;
+		remap_list[i++] = tmp->bit.sector & ~hystor_block_mask;
 		if (++count == remap_list_size)
 			break;
 	}
