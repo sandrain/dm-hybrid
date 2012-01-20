@@ -102,6 +102,7 @@ struct cache_c {
 	struct dm_kcopyd_client *kcp_client; /* Kcopyd client for writing back data */
 
 	struct cacheblock *cache;	/* Hash table for cache blocks */
+	struct cacheblock_bios *cache_bios;	/* bio_list for each cacheblock */
 	sector_t size;			/* Cache size */
 	sector_t free_blocks;		/* Free block count */
 	unsigned int bits;		/* Cache size in bits */
@@ -139,6 +140,7 @@ struct cache_c {
 };
 
 /* Cache block metadata structure */
+#if 0
 struct cacheblock {
 	spinlock_t lock;	/* Lock to protect operations on the bio list */
 	sector_t block;		/* Sector number of the cached block */
@@ -150,21 +152,23 @@ struct cacheblock {
 				 * and kernel module should not modify it. */
 	struct bio_list bios;	/* List of pending bios */
 };
+#endif
 
-#if 0
-/* Split the cacheblock structure so that we can expose it to userspace. */
-struct cachemapping {
-	sector_t block;
-	unsigned short state;
-	unsigned long counter;
+struct cacheblock_bios {
+	spinlock_t lock;
+	struct bio_list list;
 };
 
 struct cacheblock {
-	struct cachemapping *mapping;
-	spinlock_t lock;
-	struct bio_list bios;
+	sector_t block;		/* Sector number of the cached block */
+	unsigned short state;	/* State of a block */
+	unsigned long counter;	/* Logical timestamp of the block's last access
+				 * In hystor, this field is used as a counter of
+				 * inverse bitmap value.
+				 * This value is updated by the user-level monitor
+				 * and kernel module should not modify it. */
+	struct cacheblock_bios *bios;
 };
-#endif
 
 /* Structure for a kcached job */
 struct kcached_job {
@@ -187,7 +191,7 @@ struct kcached_job {
 struct hystor_debugfs_info {
 	struct dentry *entry;	/* top-level directory */
 	struct dentry *remap;	/* expose the data field below */
-	struct dentry *free;	/* expose the number of free blocks in cache */
+	struct dentry *info;	/* expose the metadata */
 	struct dentry *mapping;	/* expose cacheblock table */
 	char *data;		/* contains remap request filled by
 				 * user-level monitor */
@@ -723,16 +727,17 @@ static void flush_bios(struct cacheblock *cacheblock)
 {
 	struct bio *bio;
 	struct bio *n;
+	struct cacheblock_bios *bios = cacheblock->bios;
 
-	spin_lock(&cacheblock->lock);
-	bio = bio_list_get(&cacheblock->bios);
+	spin_lock(&bios->lock);
+	bio = bio_list_get(&bios->list);
 	if (is_state(cacheblock->state, WRITEBACK)) { /* Write back finished */
 		cacheblock->state = VALID;
 	} else { /* Cache insertion finished */
 		set_state(cacheblock->state, VALID);
 		clear_state(cacheblock->state, RESERVED);
 	}
-	spin_unlock(&cacheblock->lock);
+	spin_unlock(&bios->lock);
 
 	while (bio) {
 		n = bio->bi_next;
@@ -1166,6 +1171,7 @@ static int cache_hit(struct cache_c *dmc, struct bio* bio, sector_t cache_block)
 {
 	unsigned int offset = (unsigned int)(bio->bi_sector & dmc->block_mask);
 	struct cacheblock *cache = dmc->cache;
+	struct cacheblock_bios *bios = cache[cache_block].bios;
 
 	dmc->cache_hits++;
 
@@ -1173,19 +1179,19 @@ static int cache_hit(struct cache_c *dmc, struct bio* bio, sector_t cache_block)
 		bio->bi_bdev = dmc->cache_dev->bdev;
 		bio->bi_sector = (cache_block << dmc->block_shift)  + offset;
 
-		spin_lock(&cache[cache_block].lock);
+		spin_lock(&bios->lock);
 
 		if (is_state(cache[cache_block].state, VALID)) { /* Valid cache block */
-			spin_unlock(&cache[cache_block].lock);
+			spin_unlock(&bios->lock);
 			return 1;
 		}
 
 		/* Cache block is not ready yet */
 		DPRINTK("Add to bio list %s(%llu)",
 			dmc->cache_dev->name, (__u64) bio->bi_sector);
-		bio_list_add(&cache[cache_block].bios, bio);
+		bio_list_add(&bios->list, bio);
 
-		spin_unlock(&cache[cache_block].lock);
+		spin_unlock(&bios->lock);
 		return 0;
 	} else { /* WRITE hit */
 		if (dmc->write_policy == WRITE_THROUGH) { /* Invalidate cached data */
@@ -1200,7 +1206,7 @@ static int cache_hit(struct cache_c *dmc, struct bio* bio, sector_t cache_block)
 			dmc->dirty_blocks++;
 		}
 
-		spin_lock(&cache[cache_block].lock);
+		spin_lock(&bios->lock);
 
  		/* In the middle of write back */
 		if (is_state(cache[cache_block].state, WRITEBACK)) {
@@ -1208,8 +1214,8 @@ static int cache_hit(struct cache_c *dmc, struct bio* bio, sector_t cache_block)
 			bio->bi_bdev = dmc->src_dev->bdev;
 			DPRINTK("Add to bio list %s(%llu)",
 				dmc->src_dev->name, (__u64) bio->bi_sector);
-			bio_list_add(&cache[cache_block].bios, bio);
-			spin_unlock(&cache[cache_block].lock);
+			bio_list_add(&bios->list, bio);
+			spin_unlock(&bios->lock);
 			return 0;
 		}
 
@@ -1219,8 +1225,8 @@ static int cache_hit(struct cache_c *dmc, struct bio* bio, sector_t cache_block)
 			bio->bi_sector = (cache_block << dmc->block_shift) + offset;
 			DPRINTK("Add to bio list %s(%llu)",
 				dmc->cache_dev->name, (__u64) bio->bi_sector);
-			bio_list_add(&cache[cache_block].bios, bio);
-			spin_unlock(&cache[cache_block].lock);
+			bio_list_add(&bios->list, bio);
+			spin_unlock(&bios->lock);
 			return 0;
 		}
 
@@ -1228,7 +1234,7 @@ static int cache_hit(struct cache_c *dmc, struct bio* bio, sector_t cache_block)
 		bio->bi_bdev = dmc->cache_dev->bdev;
 		bio->bi_sector = (cache_block << dmc->block_shift) + offset;
 
-		spin_unlock(&cache[cache_block].lock);
+		spin_unlock(&bios->lock);
 		return 1;
 	}
 }
@@ -1487,6 +1493,8 @@ static int load_metadata(struct cache_c *dmc) {
 	dmc->write_policy = meta_dmc->write_policy;
 	chksum_sav = meta_dmc->chksum;
 
+	dmc->free_blocks = meta_dmc->free_blocks;
+
 	vfree((void *)meta_dmc);
 
 	order = dmc->size * sizeof(struct cacheblock);
@@ -1629,14 +1637,14 @@ static int dump_metadata(struct cache_c *dmc) {
  *  Handling debugfs entry
  ****************************************************************************/
 
-#if 0
 static void hystor_remap_mmap_open(struct vm_area_struct *vma)
 {
+	DPRINTK("hystor_remap_mmap_open");
 }
-#endif
 
 static void hystor_remap_mmap_close(struct vm_area_struct *vma)
 {
+	DPRINTK("hystor_remap_mmap_close");
 }
 
 /* TODO:
@@ -1648,6 +1656,8 @@ static int hystor_remap_mmap_fault(struct vm_area_struct *vma,
 	struct page *page;
 	struct cache_c *dmc = (struct cache_c *) vma->vm_private_data;
 	struct hystor_debugfs_info *dinfo;
+
+	DPRINTK("hystor_remap_mmap_fault");
 
 	if (!dmc)
 		return VM_FAULT_OOM;
@@ -1663,7 +1673,7 @@ static int hystor_remap_mmap_fault(struct vm_area_struct *vma,
 }
 
 static struct vm_operations_struct hystor_remap_mmap_vmops = {
-	//.open	 	= hystor_remap_mmap_open,
+	.open	 	= hystor_remap_mmap_open,
 	.close		= hystor_remap_mmap_close,
 	.fault		= hystor_remap_mmap_fault,
 };
@@ -1672,6 +1682,8 @@ static int hystor_remap_open(struct inode *inode, struct file *filp)
 {
 	struct cache_c *dmc = (struct cache_c *) inode->i_private;
 	filp->private_data = dmc;
+
+	DPRINTK("hystor_remap_open");
 
 	return 0;
 }
@@ -1689,6 +1701,8 @@ static int hystor_remap_release(struct inode *inode, struct file *filp)
 	sector_t cache_block;
 
 	dinfo->requests++;
+
+	DPRINTK("hystor_remap_fault");
 
 	DPRINTK("Block remap request:===================");
 
@@ -1762,13 +1776,13 @@ static struct file_operations hystor_remap_fops = {
 	.mmap		= hystor_remap_mmap,
 };
 
-static int hystor_free_release(struct inode *inode, struct file *filp)
+static int hystor_info_release(struct inode *inode, struct file *filp)
 {
 	filp->private_data = NULL;
 	return 0;
 }
 
-static ssize_t hystor_free_read(struct file *filp, char __user *buf,
+static ssize_t hystor_info_read(struct file *filp, char __user *buf,
 				size_t len, loff_t *offset)
 {
 	int datalen;
@@ -1796,10 +1810,10 @@ static ssize_t hystor_free_read(struct file *filp, char __user *buf,
 
 /* TODO:
  * The name free should be changed to a name such as info. */
-static struct file_operations hystor_free_fops = {
+static struct file_operations hystor_info_fops = {
 	.open		= hystor_remap_open,
-	.release	= hystor_free_release,
-	.read		= hystor_free_read,
+	.release	= hystor_info_release,
+	.read		= hystor_info_read,
 };
 
 static int hystor_mapping_mmap_fault(struct vm_area_struct *vma,
@@ -1843,7 +1857,7 @@ static int hystor_mapping_mmap(struct file *filp, struct vm_area_struct *vma)
 
 static struct file_operations hystor_mapping_fops = {
 	.open		= hystor_remap_open,
-	.release	= hystor_free_release,
+	.release	= hystor_info_release,
 	.mmap		= hystor_mapping_mmap,
 };
 
@@ -2027,7 +2041,7 @@ static int cache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	dmc->cache = (struct cacheblock *)vmalloc(order);
 	if (!dmc->cache) {
-		ti->error = "Unable to allocate memory";
+		ti->error = "Unable to allocate memory(cache)";
 		r = -ENOMEM;
 		goto bad6;
 	}
@@ -2035,6 +2049,16 @@ static int cache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	dmc->free_blocks = dmc->size;
 
 init:
+	dmc->cache_bios = (struct cacheblock_bios *) vmalloc(
+				dmc->size * sizeof(struct cacheblock_bios));
+	if (!dmc->cache_bios) {
+		ti->error = "Unable to allocate memory(cache_bios)";
+		vfree(dmc->cache);
+		r = -ENOMEM;
+		goto bad6;
+	}
+	DMINFO("cache_bios allocated!");
+
 	/* Create the debugfs entry */
 
 	dmc->debugfs = (struct hystor_debugfs_info *) kmalloc(
@@ -2072,29 +2096,38 @@ init:
 		r = -EFAULT;
 		goto bad9;
 	}
-	dmc->debugfs->free = debugfs_create_file("free", 0444,
+	dmc->debugfs->info = debugfs_create_file("info", 0444,
 					dmc->debugfs->entry,
-					dmc, &hystor_free_fops);
-	if (dmc->debugfs->free == NULL) {
-		ti->error = "Failed to create debugfs entry (free)";
+					dmc, &hystor_info_fops);
+	if (dmc->debugfs->info == NULL) {
+		ti->error = "Failed to create debugfs entry (info)";
 		r = -EFAULT;
 		goto bad9;
 	}
 	dmc->debugfs->mapping = debugfs_create_file("mapping", 0444,
 					dmc->debugfs->entry,
 					dmc, &hystor_mapping_fops);
-	if (dmc->debugfs->free == NULL) {
+	if (dmc->debugfs->mapping == NULL) {
 		ti->error = "Failed to create debugfs entry (mapping)";
 		r = -EFAULT;
 		goto bad9;
 	}
 
-	/* Initialize the cache structs */
+	/* Initialize the cache/cache_bios structs */
 	for (i=0; i<dmc->size; i++) {
+#if 0
 		bio_list_init(&dmc->cache[i].bios);
 		if(!persistence) dmc->cache[i].state = 0;
 		dmc->cache[i].counter = 0;
 		spin_lock_init(&dmc->cache[i].lock);
+#endif
+		bio_list_init(&dmc->cache_bios[i].list);
+		if (!persistence)
+			dmc->cache[i].state = 0;
+		dmc->cache[i].counter = 0;
+		spin_lock_init(&dmc->cache_bios[i].lock);
+
+		dmc->cache[i].bios = &dmc->cache_bios[i];
 	}
 
 	dmc->counter = 0;
@@ -2114,7 +2147,7 @@ init:
 bad9:
 	debugfs_remove_recursive(dmc->debugfs->entry);
 bad8:
-	kfree(dmc->debugfs->data);
+	free_page((unsigned long) dmc->debugfs->data);
 bad7:
 	kfree(dmc->debugfs);
 bad6:
@@ -2181,7 +2214,8 @@ static void cache_dtr(struct dm_target *ti)
 		       dmc->replace, dmc->writeback, dmc->dirty);
 
 	dump_metadata(dmc); /* Always dump metadata to disk before exit */
-	vfree((void *)dmc->cache);
+	vfree(dmc->cache_bios);
+	vfree(dmc->cache);
 	dm_io_client_destroy(dmc->io_client);
 
 	dm_put_device(ti, dmc->src_dev);

@@ -138,7 +138,7 @@ static void hystor_do_monitor(struct trace *tlist, int size)
 
 	remap_list = hystor_generate_remap_list(tlist, &remap_size);
 	if (remap_list == NULL) {
-		//fprintf(stderr, "failed to generate remap list!\n");
+		fprintf(stderr, "remap list is empty!\n");
 		return;
 	}
 	if (hystor_request_remap(remap_list, remap_size) < 0)
@@ -348,6 +348,7 @@ int main(int argc, char *argv[])
 	}
 
 	blkiomon_do_fifo();
+	hystor_exit();
 
 	return 0;
 }

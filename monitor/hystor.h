@@ -58,6 +58,7 @@ typedef	struct hystor_bt_block	bt_block_t;
 
 /* initialize the hystor monitor */
 extern int hystor_init(char *mapper);
+extern void hystor_exit(void);
 
 /* initialize the device information.
  * __u32 since the blk_io_trace encodes dev_t using __u32 */

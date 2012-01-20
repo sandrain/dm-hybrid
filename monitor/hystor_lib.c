@@ -54,9 +54,56 @@ struct hystor_info {
 static char *hystor_dm;
 #endif
 
+struct cacheblock {
+	__u64	block;
+	unsigned short state;
+	unsigned long counter;
+	char *pad;
+};
+
+static int mapfd;
+static struct cacheblock *cacheblock;
+
 static char *hystor_mapper;
 static int hystor_block_shift;
 static unsigned int hystor_block_mask;
+
+#if 0
+static inline u64 hash_64(u64 val, unsigned int bits)
+{
+	u64 hash = val;
+
+	/*  Sigh, gcc can't optimise this alone like it does for 32 bits. */
+	u64 n = hash;
+	n <<= 18;
+	hash -= n;
+	n <<= 33;
+	hash -= n;
+	n <<= 3;
+	hash += n;
+	n <<= 3;
+	hash -= n;
+	n <<= 4;
+	hash += n;
+	n <<= 2;
+	hash += n;
+
+	/* High bits are more random, so use them. */
+	return hash >> (64 - bits);
+}
+
+static unsigned long hash_block(sector_t block)
+{
+	unsigned long set_number, value;
+
+	value = (unsigned long)(block >> (dmc->block_shift +
+	        dmc->consecutive_shift));
+	set_number = hash_64(value, dmc->bits) / ;
+
+ 	return set_number;
+}
+#endif
+
 
 /**************************************************************************
  * Remap list.
@@ -66,6 +113,7 @@ static unsigned int hystor_block_mask;
 
 static int remap_list_size;
 static __u32 *remap_list;
+
 
 /**************************************************************************
  * In-memory block table structure.
@@ -251,7 +299,7 @@ static __u32 get_number_of_free_blocks(char *hid)
 	__u32 res;
 
 	memset(free_block_namebuf, 0, sizeof(free_block_namebuf));
-	sprintf(free_block_namebuf, "/sys/kernel/debug/hystor/%s/free", hid);
+	sprintf(free_block_namebuf, "/sys/kernel/debug/hystor/%s/info", hid);
 
 	fp = fopen(free_block_namebuf, "r");
 	if (fp == NULL)
@@ -272,8 +320,23 @@ static __u32 get_number_of_free_blocks(char *hid)
 int hystor_init(char *mapper)
 {
 	int i;
+	char *address;
 
 	hystor_mapper = mapper;
+
+	/* Read mapping table from debugfs/mapping */
+	mapfd = open("/sys/kernel/debug/hystor/8388624/mapping", O_RDWR);
+	if (mapfd < 0) {
+		perror("open");
+		return -1;
+	}
+
+	address = mmap(NULL, 2097152, PROT_READ|PROT_WRITE, MAP_SHARED, mapfd, 0);
+	if (address == MAP_FAILED) {
+		perror("mmap");
+		return -1;
+	}
+	cacheblock = (struct cacheblock *) address;
 
 	/* create a hash table for block table lookup */
 	bt_hash = create_hash_table(BT_HASH_SIZE);
@@ -301,6 +364,13 @@ int hystor_init(char *mapper)
 
 	return 0;
 }
+
+void hystor_exit(void)
+{
+	munmap((char *) cacheblock, 2097152);
+	close(mapfd);
+}
+
 
 #if 0
 int hystor_dev_init(/* dev_t */ __u32 device)
