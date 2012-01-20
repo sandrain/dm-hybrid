@@ -139,15 +139,32 @@ struct cache_c {
 };
 
 /* Cache block metadata structure */
-/* TODO: we can use the counter field to store something, maybe one of BlockTable
- * data?? */
 struct cacheblock {
 	spinlock_t lock;	/* Lock to protect operations on the bio list */
 	sector_t block;		/* Sector number of the cached block */
 	unsigned short state;	/* State of a block */
-	unsigned long counter;	/* Logical timestamp of the block's last access */
+	unsigned long counter;	/* Logical timestamp of the block's last access
+				 * In hystor, this field is used as a counter of
+				 * inverse bitmap value.
+				 * This value is updated by the user-level monitor
+				 * and kernel module should not modify it. */
 	struct bio_list bios;	/* List of pending bios */
 };
+
+#if 0
+/* Split the cacheblock structure so that we can expose it to userspace. */
+struct cachemapping {
+	sector_t block;
+	unsigned short state;
+	unsigned long counter;
+};
+
+struct cacheblock {
+	struct cachemapping *mapping;
+	spinlock_t lock;
+	struct bio_list bios;
+};
+#endif
 
 /* Structure for a kcached job */
 struct kcached_job {
@@ -168,11 +185,13 @@ struct kcached_job {
 };
 
 struct hystor_debugfs_info {
-	struct dentry *entry;
-	struct dentry *remap;
-	struct dentry *free;
-	char *data;
-	int requests;
+	struct dentry *entry;	/* top-level directory */
+	struct dentry *remap;	/* expose the data field below */
+	struct dentry *free;	/* expose the number of free blocks in cache */
+	struct dentry *mapping;	/* expose cacheblock table */
+	char *data;		/* contains remap request filled by
+				 * user-level monitor */
+	int requests;		/* accumulated request count during the session */
 };
 
 static struct dentry *hystor_debugfs;
@@ -1468,7 +1487,6 @@ static int load_metadata(struct cache_c *dmc) {
 
 	vfree((void *)meta_dmc);
 
-
 	order = dmc->size * sizeof(struct cacheblock);
 	DMINFO("Allocate %lluKB (%luB per) mem for %llu-entry cache" \
 	       "(capacity:%lluMB, associativity:%u, block size:%u " \
@@ -1559,6 +1577,8 @@ static int dump_metadata(struct cache_c *dmc) {
 		     i++, j++) {
 			/* Assume all invalid cache blocks store 0. We lose the block that
 			 * is actually mapped to offset 0.
+			 * TODO: They only saves the block mapping information. Don't save
+			 * the counter value.
 			 */
 			meta_data[j] = dmc->cache[i].state ? dmc->cache[i].block : 0;
 		}
@@ -1607,23 +1627,30 @@ static int dump_metadata(struct cache_c *dmc) {
  *  Handling debugfs entry
  ****************************************************************************/
 
-/* Really nothing to do with these functions?? */
+#if 0
 static void hystor_remap_mmap_open(struct vm_area_struct *vma)
 {
 }
+#endif
 
 static void hystor_remap_mmap_close(struct vm_area_struct *vma)
 {
 }
 
-static int hystor_remap_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+/* TODO:
+ * Make this function work with the case when we allocate multiple pages
+ * for remap request buffer */
+static int hystor_remap_mmap_fault(struct vm_area_struct *vma,
+				struct vm_fault *vmf)
 {
 	struct page *page;
 	struct cache_c *dmc = (struct cache_c *) vma->vm_private_data;
-	struct hystor_debugfs_info *dinfo = dmc->debugfs;
+	struct hystor_debugfs_info *dinfo;
 
-	if (!dinfo->data)
+	if (!dmc)
 		return VM_FAULT_OOM;
+	else
+		dinfo = dmc->debugfs;
 
 	page = virt_to_page(dinfo->data);
 	get_page(page);
@@ -1634,7 +1661,7 @@ static int hystor_remap_mmap_fault(struct vm_area_struct *vma, struct vm_fault *
 }
 
 static struct vm_operations_struct hystor_remap_mmap_vmops = {
-	.open	 	= hystor_remap_mmap_open,
+	//.open	 	= hystor_remap_mmap_open,
 	.close		= hystor_remap_mmap_close,
 	.fault		= hystor_remap_mmap_fault,
 };
@@ -1647,6 +1674,10 @@ static int hystor_remap_open(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+/* TODO:
+ * If mmap/munmap each time we request incurs big overhead, we need some
+ * other communication channel to inform this module that remap request
+ * is now ready. */
 static int hystor_remap_release(struct inode *inode, struct file *filp)
 {
 	int i, res;
@@ -1710,10 +1741,15 @@ static int hystor_remap_release(struct inode *inode, struct file *filp)
 
 static int hystor_remap_mmap(struct file *filp, struct vm_area_struct *vma)
 {
+	unsigned long length = vma->vm_end - vma->vm_start;
+
+	if (length != 4096)
+		return -EINVAL;
+
 	vma->vm_ops = &hystor_remap_mmap_vmops;
-	vma->vm_flags |= VM_RESERVED;
+	vma->vm_flags |= (VM_RESERVED | VM_DONTEXPAND);
 	vma->vm_private_data = filp->private_data;
-	hystor_remap_mmap_open(vma);
+	//hystor_remap_mmap_open(vma);
 
 	return 0;
 }
@@ -1723,7 +1759,6 @@ static struct file_operations hystor_remap_fops = {
 	.release	= hystor_remap_release,
 	.mmap		= hystor_remap_mmap,
 };
-
 
 static int hystor_free_release(struct inode *inode, struct file *filp)
 {
@@ -1735,16 +1770,20 @@ static ssize_t hystor_free_read(struct file *filp, char __user *buf,
 				size_t len, loff_t *offset)
 {
 	int datalen;
-	char tmpbuf[12];
+	char tmpbuf[64];
 	struct cache_c *dmc = (struct cache_c *) filp->private_data;
 
 	if (*offset != 0)
 		return 0;
 
-	DPRINTK("free_blocks = %u", (__u32) dmc->free_blocks);
+	DPRINTK("free_blocks = %u, meta_size = %llu",
+		(__u32) dmc->free_blocks,
+		(__u64) dmc->size * sizeof(struct cacheblock));
 
 	memset(tmpbuf, 0, sizeof(tmpbuf));
-	datalen = sprintf(tmpbuf, "%u\n", (__u32) dmc->free_blocks);
+	datalen = sprintf(tmpbuf, "%u\n%llu\n",
+		(__u32) dmc->free_blocks,
+		(__u64) dmc->size * sizeof(struct cacheblock));
 
 	if (copy_to_user(buf, tmpbuf, datalen))
 		return -EFAULT;
@@ -1753,10 +1792,57 @@ static ssize_t hystor_free_read(struct file *filp, char __user *buf,
 	return datalen;
 }
 
+/* TODO:
+ * The name free should be changed to a name such as info. */
 static struct file_operations hystor_free_fops = {
 	.open		= hystor_remap_open,
 	.release	= hystor_free_release,
 	.read		= hystor_free_read,
+};
+
+static int hystor_mapping_mmap_fault(struct vm_area_struct *vma,
+				struct vm_fault *vmf)
+{
+	struct page *page;
+	struct cache_c *dmc = (struct cache_c *) vma->vm_private_data;
+	struct hystor_debugfs_info *dinfo;
+	pgoff_t pgoff = vmf->pgoff;
+
+	if (!dmc)
+		return VM_FAULT_OOM;
+	else
+		dinfo = dmc->debugfs;
+
+	page = vmalloc_to_page(dmc->cache + (pgoff << PAGE_SHIFT));
+	if (!page)
+		return VM_FAULT_SIGBUS;
+
+	get_page(page);
+	vmf->page = page;
+
+	return 0;
+}
+
+static struct vm_operations_struct hystor_mapping_mmap_vmops = {
+	//.open	 	= hystor_remap_mmap_open,
+	.close		= hystor_remap_mmap_close,
+	.fault		= hystor_mapping_mmap_fault,
+};
+
+static int hystor_mapping_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	vma->vm_ops = &hystor_mapping_mmap_vmops;
+	vma->vm_flags |= VM_RESERVED;
+	vma->vm_private_data = filp->private_data;
+	//hystor_remap_mmap_open(vma);
+
+	return 0;
+}
+
+static struct file_operations hystor_mapping_fops = {
+	.open		= hystor_remap_open,
+	.release	= hystor_free_release,
+	.mmap		= hystor_mapping_mmap,
 };
 
 /* TODO: Verify/Rewrite the constructor!!!
@@ -1980,7 +2066,7 @@ init:
 					dmc->debugfs->entry,
 					dmc, &hystor_remap_fops);
 	if (dmc->debugfs->remap == NULL) {
-		ti->error = "Failed to create debugfs entry";
+		ti->error = "Failed to create debugfs entry (remap)";
 		r = -EFAULT;
 		goto bad9;
 	}
@@ -1988,7 +2074,15 @@ init:
 					dmc->debugfs->entry,
 					dmc, &hystor_free_fops);
 	if (dmc->debugfs->free == NULL) {
-		ti->error = "Failed to create debugfs entry";
+		ti->error = "Failed to create debugfs entry (free)";
+		r = -EFAULT;
+		goto bad9;
+	}
+	dmc->debugfs->mapping = debugfs_create_file("mapping", 0444,
+					dmc->debugfs->entry,
+					dmc, &hystor_mapping_fops);
+	if (dmc->debugfs->free == NULL) {
+		ti->error = "Failed to create debugfs entry (mapping)";
 		r = -EFAULT;
 		goto bad9;
 	}
